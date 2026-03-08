@@ -39,9 +39,15 @@ class PhasePortraitCalculator:
         """
         Извлекает размеры объекта на основе его формы
         """
-        shape = obj.get('shape', '').upper()
+        # Получаем форму, обрабатываем случай None
+        shape_value = obj.get('shape')
+        if shape_value is None:
+            shape = ''
+        else:
+            shape = str(shape_value).upper()
+        
         dimensions = {
-            'type': shape,
+            'type': 'unknown',
             'radius': None,
             'height': None,
             'length': None,
@@ -50,34 +56,46 @@ class PhasePortraitCalculator:
             'area': None
         }
         
-        if shape == 'SPHERE' or 'SPHERE' in shape:
+        if 'SPHERE' in shape or shape == 'SPHERE':
             dimensions['type'] = 'sphere'
-            dimensions['radius'] = obj.get('diameter', 0.58) / 2 if obj.get('diameter') else obj.get('width', 0.58) / 2
+            if obj.get('diameter'):
+                dimensions['radius'] = obj['diameter'] / 2
+            elif obj.get('width'):
+                dimensions['radius'] = obj['width'] / 2
+            else:
+                dimensions['radius'] = 0.5  # значение по умолчанию
             dimensions['area'] = 4 * np.pi * (dimensions['radius'] ** 2)
             
-        elif shape == 'CYL' or 'CYLINDER' in shape:
+        elif 'CYL' in shape or 'CYLINDER' in shape:
             dimensions['type'] = 'cylinder'
-            dimensions['radius'] = obj.get('diameter', 0.4) / 2 if obj.get('diameter') else 0.2
-            dimensions['height'] = obj.get('height', 3) or 3
+            if obj.get('diameter'):
+                dimensions['radius'] = obj['diameter'] / 2
+            else:
+                dimensions['radius'] = 0.3
+            dimensions['height'] = obj.get('height', 2.0) or 2.0
             # Площадь боковой поверхности + торцы
             dimensions['area'] = 2 * np.pi * dimensions['radius'] * dimensions['height'] + \
                                 2 * np.pi * (dimensions['radius'] ** 2)
             
-        elif shape == 'BOX' or 'RECTANGLE' in shape or shape == 'PAYLOAD':
+        elif 'BOX' in shape or 'RECT' in shape or shape == 'PAYLOAD' or 'HEXA' in shape:
             dimensions['type'] = 'box'
-            dimensions['length'] = obj.get('width', 1) or 1
-            dimensions['height'] = obj.get('height', 1) or 1
-            dimensions['width'] = obj.get('depth', 1) or 1
+            dimensions['length'] = obj.get('width', 1.0) or 1.0
+            dimensions['height'] = obj.get('height', 1.0) or 1.0
+            dimensions['width'] = obj.get('depth', 1.0) or 1.0
             # Площадь поверхности параллелепипеда
             dimensions['area'] = 2 * (dimensions['length'] * dimensions['height'] + \
-                                      dimensions['length'] * dimensions['width'] + \
-                                      dimensions['height'] * dimensions['width'])
+                                    dimensions['length'] * dimensions['width'] + \
+                                    dimensions['height'] * dimensions['width'])
             
         else:  # По умолчанию - сфера по среднему сечению
             dimensions['type'] = 'sphere'
-            dimensions['radius'] = math.sqrt(obj.get('xSectAvg', 0.2642) / np.pi)
-            dimensions['area'] = obj.get('xSectAvg', 0.2642) * 4
-            
+            x_sect = obj.get('xSectAvg', 0.5)
+            if x_sect and x_sect > 0:
+                dimensions['radius'] = math.sqrt(x_sect / np.pi)
+            else:
+                dimensions['radius'] = 0.5
+            dimensions['area'] = x_sect * 4 if x_sect else 1.0
+        
         return dimensions
     
     def diffuse_sphere_flux(self, R: float, phi: float, a: float = 0.2, d: float = 1000) -> float:
@@ -170,37 +188,48 @@ class PhasePortraitCalculator:
         """
         return np.linspace(0, np.pi, num_points)
     
-    def calculate_orientation_angles(self, obj: Dict, phase_angles: np.ndarray, 
-                                      orientation_mode: str = 'на Солнце') -> Tuple:
+    def calculate_orientation_angles(self, obj: Dict, phase_angle: float, 
+                                  orientation_mode: str = 'на Солнце') -> Tuple:
         """
-        Рассчитывает углы ориентации для разных режимов
+        Рассчитывает углы ориентации для одного фазового угла
         """
+        # Безопасное получение ID для seed
+        obj_id = obj.get('cosparId', '')
+        if obj_id is None:
+            obj_id = ''
+        
         if orientation_mode == 'на Солнце':
-            # Панели СБ всегда на Солнце
-            alpha = np.abs(phase_angles)  # угол между осью и Солнцем
-            beta = np.abs(phase_angles * 0.8)  # угол между осью и наблюдателем
-            epsilon = np.abs(phase_angles * 0.5)  # угол между плоскостями
+            alpha = abs(phase_angle)
+            beta = abs(phase_angle * 0.8)
+            epsilon = abs(phase_angle * 0.5)
             
         elif orientation_mode == 'на Землю':
-            alpha = np.abs(np.pi/2 - phase_angles)
-            beta = np.abs(np.pi/2 - phase_angles * 0.7)
-            epsilon = np.abs(phase_angles * 0.3)
+            alpha = abs(np.pi/2 - phase_angle)
+            beta = abs(np.pi/2 - phase_angle * 0.7)
+            epsilon = abs(phase_angle * 0.3)
             
         elif orientation_mode == 'по скорости':
-            alpha = np.abs(phase_angles * 0.6)
-            beta = np.abs(phase_angles * 0.6)
-            epsilon = np.abs(phase_angles * 0.4)
+            alpha = abs(phase_angle * 0.6)
+            beta = abs(phase_angle * 0.6)
+            epsilon = abs(phase_angle * 0.4)
             
         elif orientation_mode == 'инерциальная':
-            alpha = np.abs(phase_angles * 0.3 + 0.2)
-            beta = np.abs(phase_angles * 0.4 + 0.1)
-            epsilon = np.abs(phase_angles * 0.2)
+            alpha = abs(phase_angle * 0.3 + 0.2)
+            beta = abs(phase_angle * 0.4 + 0.1)
+            epsilon = abs(phase_angle * 0.2)
             
         else:  # хаотичная
-            np.random.seed(hash(obj.get('cosparId')) % 2**32)
-            alpha = np.abs(phase_angles + np.random.normal(0, 0.3, len(phase_angles)))
-            beta = np.abs(phase_angles + np.random.normal(0, 0.3, len(phase_angles)))
-            epsilon = np.abs(phase_angles + np.random.normal(0, 0.2, len(phase_angles)))
+            # Используем хеш от ID и угла для воспроизводимости
+            seed_value = hash(f"{obj_id}_{phase_angle}") % 2**32
+            np.random.seed(seed_value)
+            alpha = abs(phase_angle + np.random.normal(0, 0.3))
+            beta = abs(phase_angle + np.random.normal(0, 0.3))
+            epsilon = abs(phase_angle + np.random.normal(0, 0.2))
+        
+        # Ограничиваем значения в пределах [0, π]
+        alpha = min(alpha, np.pi)
+        beta = min(beta, np.pi)
+        epsilon = min(epsilon, np.pi)
         
         return alpha, beta, epsilon
     
@@ -214,26 +243,27 @@ class PhasePortraitCalculator:
         # Массив фазовых углов (в радианах)
         phi = self.calculate_phase_angles(num_points)
         
-        # Расстояние до наблюдателя (км)
-        d = 1000 + np.random.normal(0, 100)  # вариации расстояния
-        
-        # Коэффициент отражения (зависит от класса объекта)
-        if 'Payload' in obj.get('objectClass', ''):
-            a_diffuse = 0.3  # для рабочих аппаратов
-            a_specular = 0.7
-            reflection_type = 'mixed'
-        else:
-            a_diffuse = 0.2  # для мусора
-            a_specular = 0.4
-            reflection_type = 'diffuse'
-        
         results = []
         
         for i, phase in enumerate(phi):
             phase_deg = np.degrees(phase)
             
             # Рассчитываем углы ориентации для данного фазового угла
+            # ВНИМАНИЕ: Здесь мы передаем scalar phase, а не весь массив
             alpha, beta, epsilon = self.calculate_orientation_angles(obj, phase, 'на Солнце')
+            
+            # Расстояние до наблюдателя (км) - разное для каждой точки
+            d = 1000 + np.random.normal(0, 100)
+            
+            # Коэффициент отражения (зависит от класса объекта)
+            if 'Payload' in obj.get('objectClass', ''):
+                a_diffuse = 0.3  # для рабочих аппаратов
+                a_specular = 0.7
+                reflection_type = 'mixed'
+            else:
+                a_diffuse = 0.2  # для мусора
+                a_specular = 0.4
+                reflection_type = 'diffuse'
             
             # Расчет потока в зависимости от формы объекта
             if dims['type'] == 'sphere':
@@ -251,10 +281,10 @@ class PhasePortraitCalculator:
                 # Цилиндрический объект
                 if reflection_type == 'specular':
                     E = self.specular_cylinder_flux(dims['radius'], dims['height'], 
-                                                     epsilon[i], a_specular, d)
+                                                    epsilon, a_specular, d)  # Убрали [i]
                 else:
                     E = self.diffuse_cylinder_flux(dims['radius'], dims['height'],
-                                                    alpha[i], beta[i], epsilon[i], 
+                                                    alpha, beta, epsilon,  # Убрали [i]
                                                     a_diffuse, d)
                     
             elif dims['type'] == 'box':
@@ -264,21 +294,21 @@ class PhasePortraitCalculator:
                 
                 if reflection_type == 'specular':
                     # Зеркальное отражение от корпуса
-                    E_body = self.specular_plane_flux(face_area, alpha[i], epsilon[i], 
-                                                       k=2, a=a_specular, d=d)
+                    E_body = self.specular_plane_flux(face_area, alpha, epsilon,  # Убрали [i]
+                                                    k=2, a=a_specular, d=d)
                 else:
                     # Диффузное отражение от корпуса
-                    E_body = self.diffuse_plane_flux(face_area, alpha[i], beta[i], 
-                                                      a_diffuse, d)
+                    E_body = self.diffuse_plane_flux(face_area, alpha, beta,  # Убрали [i]
+                                                    a_diffuse, d)
                 
                 # Добавляем панели солнечных батарей
                 panel_area = 5.0  # площадь панелей (из изображения)
                 # Зеркальный блик от панелей при малых фазовых углах
                 if phase_deg < 30:
                     E_panels = self.specular_plane_flux(panel_area, phase * 0.5, 
-                                                         phase * 0.3, k=5, a=0.9, d=d)
+                                                        phase * 0.3, k=5, a=0.9, d=d)
                 else:
-                    E_panels = self.diffuse_plane_flux(panel_area, alpha[i], beta[i], 
+                    E_panels = self.diffuse_plane_flux(panel_area, alpha, beta,  # Убрали [i]
                                                         0.1, d)
                 
                 E = E_body + E_panels
@@ -302,9 +332,9 @@ class PhasePortraitCalculator:
                 'phi_rad': round(phase, 4),
                 'magnitude': round(magnitude + error, 3),
                 'reduced_magnitude': round(reduced_mag + error, 3),
-                'alpha_deg': round(np.degrees(alpha[i]), 2),
-                'beta_deg': round(np.degrees(beta[i]), 2),
-                'epsilon_deg': round(np.degrees(epsilon[i]), 2),
+                'alpha_deg': round(np.degrees(alpha), 2),  # Убрали [i]
+                'beta_deg': round(np.degrees(beta), 2),    # Убрали [i]
+                'epsilon_deg': round(np.degrees(epsilon), 2),  # Убрали [i]
                 'distance_km': round(d, 0),
                 'flux_W_m2': round(E, 8)
             })
@@ -315,44 +345,59 @@ class PhasePortraitCalculator:
         """
         Генерирует фазовый портрет для одного объекта и сохраняет в файл
         """
-        # Создаем имя файла на основе COSPAR ID и названия
-        cospar = obj.get('cosparId', 'unknown').replace('/', '_').replace('\\', '_')
-        name = obj.get('name', 'unknown').replace(' ', '_').replace('/', '_')
-        filename = f"{cospar}_{name}.xlsx"
+        # Безопасное получение COSPAR ID
+        cospar = obj.get('cosparId')
+        if cospar is None:
+            cospar = 'unknown'
+        cospar = str(cospar).replace('/', '_').replace('\\', '_')
         
-        # Полный путь к файлу
+        # Безопасное получение имени
+        name = obj.get('name')
+        if name is None:
+            name = 'unknown'
+        name = str(name).replace(' ', '_').replace('/', '_')
+        
+        # Ограничиваем длину имени
+        if len(name) > 50:
+            name = name[:50]
+        
+        filename = f"{cospar}_{name}.xlsx"
         filepath = os.path.join(output_dir, filename)
         
-        # Рассчитываем фазовый портрет
-        df = self.calculate_phase_portrait(obj, num_points=200)
-        
-        # Добавляем информацию об объекте
-        obj_info = pd.DataFrame([{
-            'Параметр': 'COSPAR ID',
-            'Значение': obj.get('cosparId', 'N/A')
-        }, {
-            'Параметр': 'Название',
-            'Значение': obj.get('name', 'N/A')
-        }, {
-            'Параметр': 'Тип объекта',
-            'Значение': obj.get('objectClass', 'N/A')
-        }, {
-            'Параметр': 'Форма',
-            'Значение': obj.get('shape', 'N/A')
-        }, {
-            'Параметр': 'Масса (кг)',
-            'Значение': obj.get('mass', 'N/A')
-        }, {
-            'Параметр': 'Сечение (м²)',
-            'Значение': round(obj.get('xSectAvg', 0), 3)
-        }])
-        
-        # Сохраняем в Excel с несколькими листами
-        with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
-            obj_info.to_excel(writer, sheet_name='Информация', index=False)
-            df.to_excel(writer, sheet_name='Фазовый портрет', index=False)
-        
-        print(f"  ✅ {filename} - {len(df)} точек, магнитуда: {df['magnitude'].min():.1f}-{df['magnitude'].max():.1f}")
+        try:
+            # Рассчитываем фазовый портрет
+            df = self.calculate_phase_portrait(obj, num_points=200)
+            
+            # Безопасное получение информации об объекте
+            obj_info_data = [
+                ('COSPAR ID', obj.get('cosparId', 'N/A')),
+                ('Название', obj.get('name', 'N/A')),
+                ('Тип объекта', obj.get('objectClass', 'N/A')),
+                ('Форма', obj.get('shape', 'N/A')),
+                ('Масса (кг)', obj.get('mass', 'N/A')),
+                ('Сечение (м²)', round(obj.get('xSectAvg', 0), 3) if obj.get('xSectAvg') else 'N/A')
+            ]
+            
+            obj_info = pd.DataFrame(obj_info_data, columns=['Параметр', 'Значение'])
+            
+            # Сохраняем в Excel
+            with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
+                obj_info.to_excel(writer, sheet_name='Информация', index=False)
+                df.to_excel(writer, sheet_name='Фазовый портрет', index=False)
+            
+            mag_min = df['magnitude'].min()
+            mag_max = df['magnitude'].max()
+            print(f"  ✅ {filename} - {len(df)} точек, магнитуда: {mag_min:.1f}-{mag_max:.1f}")
+            
+        except Exception as e:
+            print(f"  ❌ Ошибка при обработке {filename}: {str(e)}")
+            # В случае ошибки сохраняем в CSV как запасной вариант
+            try:
+                csv_filepath = filepath.replace('.xlsx', '.csv')
+                df.to_csv(csv_filepath, index=False, encoding='utf-8')
+                print(f"  ⚡ Сохранено в CSV: {csv_filepath}")
+            except:
+                pass
         
         return filepath
 
