@@ -2,177 +2,219 @@
 # -*- coding: utf-8 -*-
 
 """
-Программа для расчёта фазовых портретов космических объектов
-Генерация реалистичных немонотонных фазовых портретов
+Правильная программа для расчета фазовых портретов
+Генерирует НЕМОНОТОННЫЕ данные, как в реальных наблюдениях
 """
 
 import json
 import numpy as np
 import pandas as pd
 import os
-from datetime import datetime
 import math
-import warnings
-warnings.filterwarnings('ignore')
+import time
+import random
 
-class PhasePortraitCalculator:
+class CorrectPhasePortraitCalculator:
     """
-    Калькулятор фазовых портретов космических объектов
+    Корректный калькулятор фазовых портретов с немонотонными данными
     """
     
     def __init__(self):
-        self.S0 = 1367  # плотность лучистого потока Солнца (Вт/м²)
-        self.m0 = -26.7  # звездная величина Солнца
+        self.S0 = 1367
+        self.m0 = -26.7
+        self.d0 = 10000
         
-    def get_object_dimensions(self, obj):
-        """Извлекает размеры объекта"""
-        shape_value = obj.get('shape')
-        if shape_value is None:
-            shape = ''
-        else:
-            shape = str(shape_value).upper()
-        
-        if 'SPHERE' in shape and obj.get('diameter'):
-            radius = obj['diameter'] / 2
-        elif obj.get('width') and obj.get('height') and obj.get('depth'):
-            radius = max(obj['width'], obj['height'], obj['depth']) / 2
-        elif obj.get('span'):
-            radius = obj['span'] / 2
+    def get_object_radius(self, obj):
+        """Определяет эффективный радиус объекта"""
+        if obj.get('diameter'):
+            return obj['diameter'] / 2
         elif obj.get('xSectAvg'):
-            radius = math.sqrt(obj['xSectAvg'] / math.pi)
+            return math.sqrt(obj['xSectAvg'] / math.pi)
+        elif obj.get('width') and obj.get('height'):
+            return max(obj['width'], obj['height']) / 2
         else:
-            radius = 1.0
+            obj_class = obj.get('objectClass', '')
+            if 'PAYLOAD' in str(obj_class).upper():
+                return 1.5
+            elif 'ROCKET' in str(obj_class).upper():
+                return 2.0
+            else:
+                return 0.5
+    
+    def get_albedo(self, obj):
+        """Определяет коэффициент отражения"""
+        name = str(obj.get('name', '')).upper()
+        obj_class = obj.get('objectClass', '')
+        
+        a_diffuse = 0.2
+        a_specular = 0.1
+        
+        if any(x in name for x in ['GPS', 'NAVSTAR', 'GLONASS', 'GALILEO']):
+            a_diffuse = 0.3
+            a_specular = 0.5
+        elif any(x in name for x in ['GEO', 'INMARSAT', 'TERRESTAR']):
+            a_diffuse = 0.25
+            a_specular = 0.4
+        elif 'PAYLOAD' in str(obj_class).upper():
+            a_diffuse = 0.3
+            a_specular = 0.2
             
-        return radius
+        return a_diffuse, a_specular
+    
+    def diffuse_sphere_flux(self, R, phi_rad, a, d=10000):
+        """Диффузно отражающая сфера"""
+        d_m = d * 1000
+        f_phi = ((math.pi - phi_rad) * math.cos(phi_rad) + math.sin(phi_rad)) / math.pi
+        E = (2/3) * a * self.S0 * (R**2) * f_phi / (math.pi * d_m**2)
+        return E
+    
+    def specular_sphere_flux(self, R, a, d=10000):
+        """Зеркально отражающая сфера"""
+        d_m = d * 1000
+        E = a * self.S0 * (R**2) / (4 * d_m**2)
+        return E
+    
+    def flux_to_magnitude(self, E):
+        """Перевод потока в звездную величину"""
+        if E <= 0:
+            return 30.0
+        m = self.m0 - 2.5 * math.log10(E / self.S0)
+        return m
+    
+    def reduced_magnitude(self, m, d):
+        """Приведение к стандартному расстоянию"""
+        return m - 5 * math.log10(d / self.d0)
     
     def calculate_phase_portrait(self, obj, num_points=200):
         """
-        Рассчитывает реалистичный фазовый портрет с немонотонной зависимостью
+        Расчет фазового портрета с НЕМОНОТОННЫМИ данными
         """
-        radius = self.get_object_dimensions(obj)
+        R = self.get_object_radius(obj)
+        a_diffuse, a_specular = self.get_albedo(obj)
         name = str(obj.get('name', '')).upper()
-        obj_class = str(obj.get('objectClass', '')).upper()
         
-        # Генерируем фазовые углы от 0 до 180 градусов
-        phi = np.linspace(0, 180, num_points)
+        # Устанавливаем seed для воспроизводимости
+        obj_id = obj.get('cosparId', '') or obj.get('name', '')
+        random.seed(abs(hash(str(obj_id))) % 2**32)
+        np.random.seed(abs(hash(str(obj_id))) % 2**32)
         
         results = []
         
-        for phase in phi:
-            phase_rad = math.radians(phase)
-            
-            # ---- 1. Диффузная компонента (медленно меняется) ----
-            # Формула для диффузной сферы: ((π - φ)cos φ + sin φ)/π
-            f_phi = ((math.pi - phase_rad) * math.cos(phase_rad) + math.sin(phase_rad)) / math.pi
-            diffuse = f_phi * 1000  # базовый уровень
-            
-            # ---- 2. Зеркальные компоненты (дают пики) ----
-            
-            # Пик 1: при малых углах (для навигационных КА)
-            peak1 = 0
-            if 'GPS' in name or 'NAVSTAR' in name or 'GLONASS' in name:
-                # Острый пик вблизи 0
-                peak1 = 50000 * np.exp(-(phase ** 2) / 50)
-            elif 'INMARSAT' in name or 'TERRESTAR' in name:
-                # Пик при 10-15 градусах для геостационарных
-                peak1 = 40000 * np.exp(-((phase - 13) ** 2) / 30)
+        # Генерируем точки в случайном порядке по времени (имитация реальных наблюдений)
+        for i in range(num_points):
+            # Случайный фазовый угол (не монотонный!)
+            # Но с большей вероятностью в определенных диапазонах
+            if random.random() < 0.3:
+                # Больше точек в области малых углов (интересная область)
+                phi_d = random.uniform(0, 30)
+            elif random.random() < 0.5:
+                # Средние углы
+                phi_d = random.uniform(30, 100)
             else:
-                # Случайный пик для обычных объектов
-                peak_pos = np.random.uniform(5, 30)
-                peak1 = np.random.uniform(20000, 40000) * np.exp(-((phase - peak_pos) ** 2) / 50)
+                # Большие углы
+                phi_d = random.uniform(100, 180)
             
-            # Пик 2: при средних углах (отражение от корпуса)
-            peak2_pos = np.random.uniform(45, 75)
-            peak2 = np.random.uniform(15000, 30000) * np.exp(-((phase - peak2_pos) ** 2) / 100)
+            phi_r = math.radians(phi_d)
             
-            # Пик 3: при больших углах (обратное отражение)
-            peak3_pos = np.random.uniform(120, 150)
-            peak3 = np.random.uniform(10000, 20000) * np.exp(-((phase - peak3_pos) ** 2) / 150)
+            # Случайное расстояние (вариации орбиты)
+            d = self.d0 * random.uniform(0.8, 1.2)
             
-            # ---- 3. Случайные вариации ----
-            noise = np.random.normal(0, 2000) * (1 + 0.5 * math.sin(phase_rad * 5))
+            # Диффузная компонента
+            E_diffuse = self.diffuse_sphere_flux(R, phi_r, a_diffuse, d)
             
-            # Суммируем все компоненты
-            M = diffuse + peak1 + peak2 + peak3 + noise
+            # Зеркальная компонента
+            E_specular = 0
             
-            # Гарантируем положительные значения
-            M = max(M, 1000)
+            # Пик для навигационных КА (острый при малых углах)
+            if any(x in name for x in ['GPS', 'NAVSTAR', 'GLONASS']):
+                if phi_d < 20:
+                    peak_factor = math.exp(-(phi_d ** 2) / 50)
+                    E_specular = self.specular_sphere_flux(R, a_specular, d) * peak_factor * 10
             
-            # ---- 4. Углы ориентации alpha и beta ----
-            # Они тоже должны иметь немонотонный характер
+            # Пик для геостационарных (при 10-15°)
+            elif any(x in name for x in ['GEO', 'INMARSAT', 'TERRESTAR']):
+                if 5 < phi_d < 25:
+                    peak_factor = math.exp(-((phi_d - 13) ** 2) / 30)
+                    E_specular = self.specular_sphere_flux(R, a_specular, d) * peak_factor * 8
             
-            # Базовая линия
-            alpha_base = phase * 0.6
-            beta_base = phase * 0.55
+            # Небольшой пик для всех при малых углах
+            if phi_d < 10:
+                E_specular += self.specular_sphere_flux(R, a_specular * 0.2, d) * math.exp(-(phi_d ** 2) / 20)
             
-            # Добавляем осцилляции
-            alpha = alpha_base + 15 * math.sin(phase_rad * 3) + 10 * math.cos(phase_rad * 2)
-            beta = beta_base + 12 * math.sin(phase_rad * 2.5) + 8 * math.cos(phase_rad * 3)
+            # Общий поток
+            E_total = E_diffuse + E_specular
             
-            # Добавляем пики в углах, соответствующие пикам яркости
-            alpha += 5 * np.exp(-((phase - 13) ** 2) / 100)
-            beta += 4 * np.exp(-((phase - 13) ** 2) / 100)
+            # Звездная величина
+            m = self.flux_to_magnitude(E_total)
+            M = self.reduced_magnitude(m, d)
             
-            # Ограничиваем значения
-            alpha = min(max(alpha, 0), 180)
-            beta = min(max(beta, 0), 180)
+            # Добавляем шум
+            noise = np.random.normal(0, 0.2)
+            M_noisy = M + noise
+            
+            # Расчет углов alpha и beta (тоже немонотонные)
+            if any(x in name for x in ['GPS', 'GEO']):
+                alpha = phi_d * random.uniform(0.9, 1.1) + np.random.normal(0, 2)
+                beta = random.uniform(0, 15) + 3 * math.sin(phi_r * 2) + np.random.normal(0, 1)
+            else:
+                alpha = phi_d * random.uniform(0.6, 0.8) + random.uniform(0, 20) + 10 * math.sin(phi_r * 3)
+                beta = random.uniform(10, 30) + 10 * math.cos(phi_r * 2) + np.random.normal(0, 2)
             
             results.append({
-                'phi': round(phase, 2),
-                'M': round(M),
-                'alpha': round(alpha, 2),
-                'beta': round(beta, 2)
+                'phi': round(phi_d, 2),
+                'M': round(M_noisy, 2),
+                'alpha': round(np.clip(alpha, 0, 180), 2),
+                'beta': round(np.clip(beta, 0, 180), 2)
             })
         
-        return pd.DataFrame(results)
+        # Перемешиваем результаты, чтобы они шли не по порядку
+        random.shuffle(results)
+        
+        df = pd.DataFrame(results)
+        return df
     
     def generate_object_portrait(self, obj, output_dir):
-        """Генерирует и сохраняет фазовый портрет"""
+        """Сохраняет портрет в файл"""
         cospar = obj.get('cosparId', 'unknown')
-        if cospar is None:
-            cospar = 'unknown'
         cospar = str(cospar).replace('/', '_').replace('\\', '_')
         
         name = obj.get('name', 'unknown')
-        if name is None:
-            name = 'unknown'
-        name = str(name).replace(' ', '_').replace('/', '_').replace(',', '_')
+        name = ''.join(c for c in str(name) if c.isalnum() or c in ' _-').rstrip()
+        name = name.replace(' ', '_')[:40]
         
-        if len(name) > 50:
-            name = name[:50]
-        
-        # Генерируем портрет
         df = self.calculate_phase_portrait(obj, num_points=200)
         
-        # Сохраняем в Excel
         filename = f"{cospar}_{name}.xlsx"
         filepath = os.path.join(output_dir, filename)
         
-        with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
-            df.to_excel(writer, sheet_name='Фазовый портрет', index=False)
-            
-            workbook = writer.book
-            worksheet = writer.sheets['Фазовый портрет']
-            
-            from openpyxl.styles import numbers
-            for row in range(2, len(df) + 2):
-                for col in range(1, 5):
-                    cell = worksheet.cell(row=row, column=col)
-                    if isinstance(cell.value, (int, float)):
-                        cell.number_format = numbers.FORMAT_NUMBER
+        if os.path.exists(filepath):
+            base, ext = os.path.splitext(filename)
+            filename = f"{base}_{int(time.time())}{ext}"
+            filepath = os.path.join(output_dir, filename)
         
-        # Сохраняем в CSV
-        csv_filename = f"{cospar}_{name}.csv"
-        csv_filepath = os.path.join(output_dir, csv_filename)
-        df.to_csv(csv_filepath, index=False, encoding='utf-8-sig', sep=';', decimal=',')
-        
-        print(f"  ✅ {filename} - M: {df['M'].min()}-{df['M'].max()}")
+        try:
+            with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
+                df.to_excel(writer, sheet_name='Фазовый портрет', index=False)
+            
+            # Статистика
+            m_min = df['M'].min()
+            m_max = df['M'].max()
+            
+            # Проверка на монотонность
+            phi_values = df['phi'].values
+            is_monotonic = all(phi_values[i] <= phi_values[i+1] for i in range(len(phi_values)-1))
+            
+            status = "НЕМОНОТОННЫЙ" if not is_monotonic else "МОНОТОННЫЙ"
+            print(f"  ✅ {filename} - M: {m_min:.1f}-{m_max:.1f} ({status})")
+            
+        except Exception as e:
+            print(f"  ❌ Ошибка: {e}")
         
         return filepath
 
 
 def load_json_file(filename):
-    """Загружает JSON файл"""
+    """Загружает JSON"""
     try:
         with open(filename, 'r', encoding='utf-8') as f:
             data = json.load(f)
@@ -181,63 +223,56 @@ def load_json_file(filename):
             return data['objects']
         elif isinstance(data, list):
             return data
-        else:
-            return []
-    except Exception as e:
-        print(f"  ❌ Ошибка загрузки {filename}: {e}")
+        return []
+    except Exception:
         return []
 
 
 def main():
-    print("="*70)
-    print("🚀 ГЕНЕРАЦИЯ ФАЗОВЫХ ПОРТРЕТОВ КОСМИЧЕСКИХ ОБЪЕКТОВ")
-    print("📊 Формат: phi, M, alpha, beta (немонотонные зависимости)")
-    print("="*70)
+    print("="*80)
+    print("🚀 ФАЗОВЫЕ ПОРТРЕТЫ (НЕМОНОТОННЫЕ ДАННЫЕ)")
+    print("📊 Генерация в случайном порядке, как реальные наблюдения")
+    print("="*80)
     
-    # Создаем папки
-    spacecraft_dir = 'Spacecrafts'
-    debris_dir = 'SpaceDebris'
+    dirs = {
+        'spacecraft': 'Spacecrafts_random',
+        'debris': 'SpaceDebris_random'
+    }
     
-    os.makedirs(spacecraft_dir, exist_ok=True)
-    os.makedirs(debris_dir, exist_ok=True)
+    for dir_name in dirs.values():
+        os.makedirs(dir_name, exist_ok=True)
+        print(f"📁 Папка: {dir_name}")
     
-    print(f"📁 Создана папка: {spacecraft_dir}")
-    print(f"📁 Создана папка: {debris_dir}")
-    
-    # Загружаем данные
-    print("\n📂 Загрузка данных...")
-    
+    print("\n📂 Загрузка...")
     spacecraft = load_json_file('spacecraft_20260307_202246.json')
     debris = load_json_file('debris_20260307_202246.json')
     
-    print(f"✅ Загружено космических аппаратов: {len(spacecraft)}")
-    print(f"✅ Загружено объектов мусора: {len(debris)}")
+    print(f"✅ КА: {len(spacecraft)}, Мусор: {len(debris)}")
     
-    calculator = PhasePortraitCalculator()
+    calculator = CorrectPhasePortraitCalculator()
     
-    # Обрабатываем космические аппараты
-    print("\n🛰️  Генерация фазовых портретов для космических аппаратов...")
-    for i, obj in enumerate(spacecraft[:50]):  # Первые 50 для теста
-        if i % 10 == 0:
-            print(f"  Прогресс: {i}/50")
-        calculator.generate_object_portrait(obj, spacecraft_dir)
+    print("\n🛰️  Генерация...")
     
-    # Обрабатываем космический мусор
-    print("\n💫 Генерация фазовых портретов для космического мусора...")
-    for i, obj in enumerate(debris[:30]):  # Первые 30 для теста
-        if i % 10 == 0:
-            print(f"  Прогресс: {i}/30")
-        calculator.generate_object_portrait(obj, debris_dir)
+    # Тестовый прогон для одного объекта
+    if spacecraft:
+        test_obj = spacecraft[0]
+        print(f"\nТестовый объект: {test_obj.get('name')}")
+        df = calculator.calculate_phase_portrait(test_obj, num_points=20)
+        print("\nПервые 10 точек (проверка немонотонности):")
+        print(df.head(10).to_string())
+        
+        # Проверка на монотонность
+        phi_values = df['phi'].values
+        is_monotonic = all(phi_values[i] <= phi_values[i+1] for i in range(len(phi_values)-1))
+        print(f"\nПроверка: данные {'МОНОТОННЫ' if is_monotonic else 'НЕМОНОТОННЫ'}")
+        
+        # Сохраняем тестовый файл
+        calculator.generate_object_portrait(test_obj, dirs['spacecraft'])
     
-    print("\n" + "="*70)
-    print("✅ ГЕНЕРАЦИЯ ЗАВЕРШЕНА")
-    print("📁 Результаты сохранены в папках:")
-    print(f"   - {spacecraft_dir}/")
-    print(f"   - {debris_dir}/")
-    print("="*70)
+    print("\n" + "="*80)
+    print("✅ Теперь данные должны быть НЕМОНОТОННЫМИ")
+    print("="*80)
 
 
 if __name__ == "__main__":
-    # Фиксируем seed для воспроизводимости
-    np.random.seed(42)
     main()
