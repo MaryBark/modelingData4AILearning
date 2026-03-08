@@ -2,8 +2,9 @@
 # -*- coding: utf-8 -*-
 
 """
-Правильная программа для расчета фазовых портретов
+Программа для генерации фазовых портретов космических объектов
 Генерирует НЕМОНОТОННЫЕ данные, как в реальных наблюдениях
+Сохраняет в формате: phi, M, alpha, beta
 """
 
 import json
@@ -14,9 +15,9 @@ import math
 import time
 import random
 
-class CorrectPhasePortraitCalculator:
+class PhasePortraitGenerator:
     """
-    Корректный калькулятор фазовых портретов с немонотонными данными
+    Генератор фазовых портретов с немонотонными данными
     """
     
     def __init__(self):
@@ -46,9 +47,11 @@ class CorrectPhasePortraitCalculator:
         name = str(obj.get('name', '')).upper()
         obj_class = obj.get('objectClass', '')
         
+        # Базовые значения
         a_diffuse = 0.2
         a_specular = 0.1
         
+        # Корректировка в зависимости от типа объекта
         if any(x in name for x in ['GPS', 'NAVSTAR', 'GLONASS', 'GALILEO']):
             a_diffuse = 0.3
             a_specular = 0.5
@@ -100,14 +103,14 @@ class CorrectPhasePortraitCalculator:
         
         results = []
         
-        # Генерируем точки в случайном порядке по времени (имитация реальных наблюдений)
+        # Генерируем точки в случайном порядке
         for i in range(num_points):
-            # Случайный фазовый угол (не монотонный!)
-            # Но с большей вероятностью в определенных диапазонах
-            if random.random() < 0.3:
+            # Случайный фазовый угол с распределением
+            r = random.random()
+            if r < 0.3:
                 # Больше точек в области малых углов (интересная область)
                 phi_d = random.uniform(0, 30)
-            elif random.random() < 0.5:
+            elif r < 0.6:
                 # Средние углы
                 phi_d = random.uniform(30, 100)
             else:
@@ -116,7 +119,7 @@ class CorrectPhasePortraitCalculator:
             
             phi_r = math.radians(phi_d)
             
-            # Случайное расстояние (вариации орбиты)
+            # Случайное расстояние
             d = self.d0 * random.uniform(0.8, 1.2)
             
             # Диффузная компонента
@@ -125,13 +128,13 @@ class CorrectPhasePortraitCalculator:
             # Зеркальная компонента
             E_specular = 0
             
-            # Пик для навигационных КА (острый при малых углах)
+            # Пик для навигационных КА
             if any(x in name for x in ['GPS', 'NAVSTAR', 'GLONASS']):
                 if phi_d < 20:
                     peak_factor = math.exp(-(phi_d ** 2) / 50)
                     E_specular = self.specular_sphere_flux(R, a_specular, d) * peak_factor * 10
             
-            # Пик для геостационарных (при 10-15°)
+            # Пик для геостационарных
             elif any(x in name for x in ['GEO', 'INMARSAT', 'TERRESTAR']):
                 if 5 < phi_d < 25:
                     peak_factor = math.exp(-((phi_d - 13) ** 2) / 30)
@@ -152,7 +155,7 @@ class CorrectPhasePortraitCalculator:
             noise = np.random.normal(0, 0.2)
             M_noisy = M + noise
             
-            # Расчет углов alpha и beta (тоже немонотонные)
+            # Расчет углов alpha и beta
             if any(x in name for x in ['GPS', 'GEO']):
                 alpha = phi_d * random.uniform(0.9, 1.1) + np.random.normal(0, 2)
                 beta = random.uniform(0, 15) + 3 * math.sin(phi_r * 2) + np.random.normal(0, 1)
@@ -167,26 +170,38 @@ class CorrectPhasePortraitCalculator:
                 'beta': round(np.clip(beta, 0, 180), 2)
             })
         
-        # Перемешиваем результаты, чтобы они шли не по порядку
+        # Перемешиваем результаты
         random.shuffle(results)
         
-        df = pd.DataFrame(results)
-        return df
+        return pd.DataFrame(results)
     
-    def generate_object_portrait(self, obj, output_dir):
+    def generate_object_portrait(self, obj, output_dir, obj_type):
         """Сохраняет портрет в файл"""
+        # Формируем безопасное имя файла
         cospar = obj.get('cosparId', 'unknown')
-        cospar = str(cospar).replace('/', '_').replace('\\', '_')
+        if cospar is None:
+            cospar = 'unknown'
+        cospar = str(cospar).replace('/', '_').replace('\\', '_').replace(':', '_')
         
         name = obj.get('name', 'unknown')
+        if name is None:
+            name = 'unknown'
+        # Очищаем имя от недопустимых символов
         name = ''.join(c for c in str(name) if c.isalnum() or c in ' _-').rstrip()
         name = name.replace(' ', '_')[:40]
         
+        # Генерируем портрет
         df = self.calculate_phase_portrait(obj, num_points=200)
         
+        if df.empty:
+            print(f"  ⚠ {cospar}_{name} - нет данных")
+            return None
+        
+        # Сохраняем в Excel
         filename = f"{cospar}_{name}.xlsx"
         filepath = os.path.join(output_dir, filename)
         
+        # Если файл существует, добавляем timestamp
         if os.path.exists(filepath):
             base, ext = os.path.splitext(filename)
             filename = f"{base}_{int(time.time())}{ext}"
@@ -199,22 +214,16 @@ class CorrectPhasePortraitCalculator:
             # Статистика
             m_min = df['M'].min()
             m_max = df['M'].max()
-            
-            # Проверка на монотонность
-            phi_values = df['phi'].values
-            is_monotonic = all(phi_values[i] <= phi_values[i+1] for i in range(len(phi_values)-1))
-            
-            status = "НЕМОНОТОННЫЙ" if not is_monotonic else "МОНОТОННЫЙ"
-            print(f"  ✅ {filename} - M: {m_min:.1f}-{m_max:.1f} ({status})")
+            print(f"  ✅ {filename} - M: {m_min:.1f}-{m_max:.1f}")
             
         except Exception as e:
-            print(f"  ❌ Ошибка: {e}")
+            print(f"  ❌ Ошибка сохранения {filename}: {e}")
         
         return filepath
 
 
 def load_json_file(filename):
-    """Загружает JSON"""
+    """Загружает JSON файл"""
     try:
         with open(filename, 'r', encoding='utf-8') as f:
             data = json.load(f)
@@ -223,54 +232,87 @@ def load_json_file(filename):
             return data['objects']
         elif isinstance(data, list):
             return data
+        else:
+            return []
+    except FileNotFoundError:
+        print(f"  ❌ Файл {filename} не найден")
         return []
-    except Exception:
+    except Exception as e:
+        print(f"  ❌ Ошибка загрузки {filename}: {e}")
         return []
 
 
 def main():
     print("="*80)
-    print("🚀 ФАЗОВЫЕ ПОРТРЕТЫ (НЕМОНОТОННЫЕ ДАННЫЕ)")
-    print("📊 Генерация в случайном порядке, как реальные наблюдения")
+    print("🚀 ГЕНЕРАТОР ФАЗОВЫХ ПОРТРЕТОВ")
+    print("📊 Формат: phi, M, alpha, beta (немонотонные данные)")
     print("="*80)
     
-    dirs = {
-        'spacecraft': 'Spacecrafts_random',
-        'debris': 'SpaceDebris_random'
-    }
+    # Создаем папки для результатов
+    spacecraft_dir = 'Spacecrafts_final'
+    debris_dir = 'SpaceDebris_final'
     
-    for dir_name in dirs.values():
-        os.makedirs(dir_name, exist_ok=True)
-        print(f"📁 Папка: {dir_name}")
+    os.makedirs(spacecraft_dir, exist_ok=True)
+    os.makedirs(debris_dir, exist_ok=True)
     
-    print("\n📂 Загрузка...")
+    print(f"📁 Создана папка: {spacecraft_dir}")
+    print(f"📁 Создана папка: {debris_dir}")
+    
+    # Загружаем данные
+    print("\n📂 Загрузка данных...")
+    
     spacecraft = load_json_file('spacecraft_20260307_202246.json')
     debris = load_json_file('debris_20260307_202246.json')
     
-    print(f"✅ КА: {len(spacecraft)}, Мусор: {len(debris)}")
+    print(f"✅ Космических аппаратов: {len(spacecraft)}")
+    print(f"✅ Объектов мусора: {len(debris)}")
     
-    calculator = CorrectPhasePortraitCalculator()
+    if len(spacecraft) == 0 and len(debris) == 0:
+        print("❌ Нет данных для обработки")
+        return
     
-    print("\n🛰️  Генерация...")
+    generator = PhasePortraitGenerator()
     
-    # Тестовый прогон для одного объекта
-    if spacecraft:
-        test_obj = spacecraft[0]
-        print(f"\nТестовый объект: {test_obj.get('name')}")
-        df = calculator.calculate_phase_portrait(test_obj, num_points=20)
-        print("\nПервые 10 точек (проверка немонотонности):")
-        print(df.head(10).to_string())
+    # Обрабатываем космические аппараты (первые 1500)
+    print("\n🛰️  Генерация портретов для космических аппаратов...")
+    processed_sc = 0
+    total_sc = min(1500, len(spacecraft))
+    
+    for i, obj in enumerate(spacecraft[:total_sc]):
+        try:
+            if generator.generate_object_portrait(obj, spacecraft_dir, 'SC'):
+                processed_sc += 1
+        except Exception as e:
+            print(f"  ⚠ Ошибка обработки {obj.get('name', 'unknown')}: {e}")
         
-        # Проверка на монотонность
-        phi_values = df['phi'].values
-        is_monotonic = all(phi_values[i] <= phi_values[i+1] for i in range(len(phi_values)-1))
-        print(f"\nПроверка: данные {'МОНОТОННЫ' if is_monotonic else 'НЕМОНОТОННЫ'}")
+        if (i + 1) % 100 == 0:
+            print(f"  Прогресс: {i+1}/{total_sc}")
+    
+    # Обрабатываем космический мусор (первые 500)
+    print("\n💫 Генерация портретов для космического мусора...")
+    processed_db = 0
+    total_db = min(500, len(debris))
+    
+    for i, obj in enumerate(debris[:total_db]):
+        try:
+            if generator.generate_object_portrait(obj, debris_dir, 'DB'):
+                processed_db += 1
+        except Exception as e:
+            print(f"  ⚠ Ошибка обработки {obj.get('name', 'unknown')}: {e}")
         
-        # Сохраняем тестовый файл
-        calculator.generate_object_portrait(test_obj, dirs['spacecraft'])
+        if (i + 1) % 100 == 0:
+            print(f"  Прогресс: {i+1}/{total_db}")
     
     print("\n" + "="*80)
-    print("✅ Теперь данные должны быть НЕМОНОТОННЫМИ")
+    print("✅ ГЕНЕРАЦИЯ ЗАВЕРШЕНА")
+    print(f"📊 Обработано объектов: {processed_sc + processed_db}")
+    print("📁 Результаты сохранены в папках:")
+    print(f"   - {spacecraft_dir}/ ({processed_sc} файлов)")
+    print(f"   - {debris_dir}/ ({processed_db} файлов)")
+    print("\n📈 Каждый файл содержит 4 колонки:")
+    print("   phi - фазовый угол (градусы)")
+    print("   M - приведенная звездная величина")
+    print("   alpha, beta - углы ориентации")
     print("="*80)
 
 
