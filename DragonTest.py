@@ -6,6 +6,7 @@
 Генерирует данные, соответствующие формату сайта sakva.ru
 Значения M в диапазоне 10000-50000, как на сайте
 Берет последние 1000 объектов
+ИСПРАВЛЕННАЯ ВЕРСИЯ - правильный диапазон phi
 """
 
 import json
@@ -77,50 +78,54 @@ class PhasePortraitGenerator:
         """
         Расчет яркости M как на сайте
         """
-        # Диапазон phi должен быть 90-110 градусов как на сайте
-        phi_d = np.clip(phi_d, 90, 115)
-        
-        # Базовый уровень зависит от типа объекта
+        # Базовый уровень зависит от типа объекта и фазового угла
         if obj_type == 'navigation':
-            base = 28000
+            base = 28000 - 50 * phi_d
         elif obj_type == 'geo':
-            base = 26000
+            base = 26000 - 40 * phi_d
         elif obj_type == 'payload':
-            base = 24000
+            base = 24000 - 30 * phi_d
         elif obj_type == 'rocket':
-            base = 22000
+            base = 22000 - 20 * phi_d
         else:
-            base = 20000
+            base = 20000 - 10 * phi_d
         
-        # Основной пик при 103 градусах
-        peak1 = 18000 * math.exp(-((phi_d - 103) ** 2) / 35)
+        # Основные пики
+        # Пик при 0-20 градусах (противостояние)
+        peak_opposition = 15000 * math.exp(-(phi_d ** 2) / 200)
         
-        # Пик при 97 градусах
-        peak2 = 10000 * math.exp(-((phi_d - 97) ** 2) / 25)
-        
-        # Пик при 107 градусах
-        peak3 = 8000 * math.exp(-((phi_d - 107) ** 2) / 30)
-        
-        # Дополнительные пики для навигационных
+        # Пик для навигационных КА при малых углах
         if obj_type == 'navigation' and phi_d < 30:
-            nav_peak = 25000 * math.exp(-(phi_d ** 2) / 50)
+            nav_peak = 25000 * math.exp(-(phi_d ** 2) / 100)
         else:
             nav_peak = 0
         
-        # Пик для геостационарных при 13°
+        # Пик для геостационарных при 10-15°
         if obj_type == 'geo' and 5 < phi_d < 25:
-            geo_peak = 20000 * math.exp(-((phi_d - 13) ** 2) / 25)
+            geo_peak = 20000 * math.exp(-((phi_d - 13) ** 2) / 30)
         else:
             geo_peak = 0
         
-        # Случайные вариации
-        variation = np.random.normal(0, 1500)
+        # Пик при 90-110 градусах (как на сайте)
+        if 80 < phi_d < 120:
+            peak_mid = 18000 * math.exp(-((phi_d - 103) ** 2) / 50)
+        else:
+            peak_mid = 0
         
-        M = base + peak1 + peak2 + peak3 + nav_peak + geo_peak + variation
+        # Пик при больших углах (обратное отражение)
+        if phi_d > 140:
+            peak_back = 12000 * math.exp(-((phi_d - 160) ** 2) / 100)
+        else:
+            peak_back = 0
+        
+        # Случайные вариации (зависят от угла)
+        variation = np.random.normal(0, 1000) * (1 + 0.5 * math.sin(math.radians(phi_d * 3)))
+        
+        M = base + peak_opposition + nav_peak + geo_peak + peak_mid + peak_back + variation
         
         # Ограничиваем диапазон как на сайте
-        M = max(M, 10000)
-        M = min(M, 55000)
+        M = max(M, 8000)
+        M = min(M, 60000)
         
         return M
     
@@ -128,8 +133,14 @@ class PhasePortraitGenerator:
         """
         Расчет углов alpha и beta как на сайте
         """
-        # Альфа примерно равна phi с небольшим отклонением
-        alpha = phi_d * random.uniform(0.96, 1.04) + np.random.normal(0, 0.5)
+        # Альфа зависит от типа орбиты
+        if obj_type in ['navigation', 'geo']:
+            # Для высоких орбит alpha близка к phi
+            alpha = phi_d * random.uniform(0.95, 1.05) + np.random.normal(0, 1)
+        else:
+            # Для низких орбит alpha может отличаться
+            alpha = phi_d * random.uniform(0.8, 1.2) + np.random.normal(0, 5)
+        
         alpha = np.clip(alpha, 0, 180)
         
         # Выбор beta из характерных значений
@@ -166,13 +177,10 @@ class PhasePortraitGenerator:
         
         results = []
         
-        # Генерируем точки в основном в диапазоне 90-115 градусов
+        # Генерируем точки по всему диапазону 0-180 градусов
         for i in range(num_points):
-            # 80% точек в диапазоне 90-115, 20% в остальных
-            if random.random() < 0.8:
-                phi_d = random.uniform(90, 115)
-            else:
-                phi_d = random.uniform(0, 180)
+            # Равномерное распределение по всему диапазону
+            phi_d = random.uniform(0, 180)
             
             # Расчет яркости
             M = self.calculate_brightness(phi_d, obj_type)
@@ -187,10 +195,11 @@ class PhasePortraitGenerator:
                 'beta': beta
             })
         
-        # Перемешиваем результаты
-        random.shuffle(results)
+        # Сортируем по phi для удобства
+        df = pd.DataFrame(results)
+        df = df.sort_values('phi')
         
-        return pd.DataFrame(results)
+        return df
     
     def generate_object_portrait(self, obj, output_dir):
         """Сохраняет портрет в файл"""
@@ -246,12 +255,13 @@ def load_json_file(filename):
 def main():
     print("="*80)
     print("🚀 ГЕНЕРАТОР ФАЗОВЫХ ПОРТРЕТОВ (ФОРМАТ САЙТА)")
-    print("📊 Значения M: 10000-55000, как на sakva.ru")
+    print("📊 Значения M: 8000-60000, как на sakva.ru")
+    print("📊 Диапазон phi: 0-180 градусов")
     print("📊 Берем последние 1000 объектов")
     print("="*80)
     
-    spacecraft_dir = 'Spacecrafts_site_1000'
-    debris_dir = 'SpaceDebris_site_1000'
+    spacecraft_dir = 'Spacecrafts_site_1000_fixed'
+    debris_dir = 'SpaceDebris_site_1000_fixed'
     
     os.makedirs(spacecraft_dir, exist_ok=True)
     os.makedirs(debris_dir, exist_ok=True)
@@ -284,10 +294,11 @@ def main():
     if spacecraft:
         test_obj = spacecraft[0]
         print(f"\n🔍 Тестовый объект: {test_obj.get('name')}")
-        test_df = generator.calculate_phase_portrait(test_obj, num_points=10)
-        print("\nПример данных (первые 5 строк):")
-        print(test_df.head().to_string())
-        print(f"\nДиапазон M: {test_df['M'].min()} - {test_df['M'].max()}")
+        test_df = generator.calculate_phase_portrait(test_obj, num_points=20)
+        print("\nПример данных (первые 10 строк):")
+        print(test_df.head(10).to_string())
+        print(f"\nДиапазон phi: {test_df['phi'].min()} - {test_df['phi'].max()}")
+        print(f"Диапазон M: {test_df['M'].min()} - {test_df['M'].max()}")
     
     print("\n🛰️  Генерация портретов для космических аппаратов...")
     processed_sc = 0
@@ -296,8 +307,8 @@ def main():
         try:
             if generator.generate_object_portrait(obj, spacecraft_dir):
                 processed_sc += 1
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"  ⚠ Ошибка: {e}")
         
         if (i + 1) % 100 == 0:
             print(f"  Прогресс: {i+1}/{len(spacecraft)} (успешно: {processed_sc})")
@@ -309,8 +320,8 @@ def main():
         try:
             if generator.generate_object_portrait(obj, debris_dir):
                 processed_db += 1
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"  ⚠ Ошибка: {e}")
         
         if (i + 1) % 100 == 0:
             print(f"  Прогресс: {i+1}/{len(debris)} (успешно: {processed_db})")
@@ -321,8 +332,7 @@ def main():
     print("📁 Результаты сохранены в папках:")
     print(f"   - {spacecraft_dir}/ ({processed_sc} файлов)")
     print(f"   - {debris_dir}/ ({processed_db} файлов)")
-    print("\n📈 Каждый файл содержит 4 колонки в формате сайта:")
-    print("   phi, M, alpha, beta")
+    print("\n📈 Каждый файл содержит данные по всему диапазону phi 0-180°")
     print("="*80)
 
 
