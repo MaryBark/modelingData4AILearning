@@ -4,6 +4,7 @@
 """
 Программа для генерации фазовых портретов космических объектов
 Генерирует НЕМОНОТОННЫЕ данные, как в реальных наблюдениях
+Берет ПОСЛЕДНИЕ 1500 объектов из каждого файла
 Сохраняет в формате: phi, M, alpha, beta
 """
 
@@ -88,7 +89,7 @@ class PhasePortraitGenerator:
         """Приведение к стандартному расстоянию"""
         return m - 5 * math.log10(d / self.d0)
     
-    def calculate_phase_portrait(self, obj, num_points=200):
+    def calculate_phase_portrait(self, obj, num_points=500):
         """
         Расчет фазового портрета с НЕМОНОТОННЫМИ данными
         """
@@ -191,7 +192,7 @@ class PhasePortraitGenerator:
         name = name.replace(' ', '_')[:40]
         
         # Генерируем портрет
-        df = self.calculate_phase_portrait(obj, num_points=200)
+        df = self.calculate_phase_portrait(obj, num_points=500)
         
         if df.empty:
             print(f"  ⚠ {cospar}_{name} - нет данных")
@@ -245,12 +246,13 @@ def load_json_file(filename):
 def main():
     print("="*80)
     print("🚀 ГЕНЕРАТОР ФАЗОВЫХ ПОРТРЕТОВ")
+    print("📊 Берутся ПОСЛЕДНИЕ 1500 объектов из каждого файла")
     print("📊 Формат: phi, M, alpha, beta (немонотонные данные)")
     print("="*80)
     
     # Создаем папки для результатов
-    spacecraft_dir = 'Spacecrafts_final'
-    debris_dir = 'SpaceDebris_final'
+    spacecraft_dir = 'Spacecrafts_last1500'
+    debris_dir = 'SpaceDebris_last1500'
     
     os.makedirs(spacecraft_dir, exist_ok=True)
     os.makedirs(debris_dir, exist_ok=True)
@@ -261,24 +263,34 @@ def main():
     # Загружаем данные
     print("\n📂 Загрузка данных...")
     
-    spacecraft = load_json_file('spacecraft_20260307_202246.json')
-    debris = load_json_file('debris_20260307_202246.json')
+    spacecraft_all = load_json_file('spacecraft_20260307_202246.json')
+    debris_all = load_json_file('debris_20260307_202246.json')
     
-    print(f"✅ Космических аппаратов: {len(spacecraft)}")
-    print(f"✅ Объектов мусора: {len(debris)}")
+    print(f"✅ Всего космических аппаратов: {len(spacecraft_all)}")
+    print(f"✅ Всего объектов мусора: {len(debris_all)}")
     
-    if len(spacecraft) == 0 and len(debris) == 0:
+    if len(spacecraft_all) == 0 and len(debris_all) == 0:
         print("❌ Нет данных для обработки")
         return
     
+    # Берем ПОСЛЕДНИЕ 1500 объектов
+    total_sc = min(10, len(spacecraft_all))
+    total_db = min(10, len(debris_all))
+    
+    spacecraft = spacecraft_all[-total_sc:]  # Последние total_sc объектов
+    debris = debris_all[-total_db:]          # Последние total_db объектов
+    
+    print(f"\n📊 Для обработки выбрано:")
+    print(f"   - Космические аппараты: {len(spacecraft)} (последние {total_sc})")
+    print(f"   - Космический мусор: {len(debris)} (последние {total_db})")
+    
     generator = PhasePortraitGenerator()
     
-    # Обрабатываем космические аппараты (первые 1500)
+    # Обрабатываем космические аппараты
     print("\n🛰️  Генерация портретов для космических аппаратов...")
     processed_sc = 0
-    total_sc = min(1500, len(spacecraft))
     
-    for i, obj in enumerate(spacecraft[:total_sc]):
+    for i, obj in enumerate(spacecraft):
         try:
             if generator.generate_object_portrait(obj, spacecraft_dir, 'SC'):
                 processed_sc += 1
@@ -286,14 +298,13 @@ def main():
             print(f"  ⚠ Ошибка обработки {obj.get('name', 'unknown')}: {e}")
         
         if (i + 1) % 100 == 0:
-            print(f"  Прогресс: {i+1}/{total_sc}")
+            print(f"  Прогресс: {i+1}/{len(spacecraft)}")
     
-    # Обрабатываем космический мусор (первые 500)
+    # Обрабатываем космический мусор
     print("\n💫 Генерация портретов для космического мусора...")
     processed_db = 0
-    total_db = min(500, len(debris))
     
-    for i, obj in enumerate(debris[:total_db]):
+    for i, obj in enumerate(debris):
         try:
             if generator.generate_object_portrait(obj, debris_dir, 'DB'):
                 processed_db += 1
@@ -301,14 +312,14 @@ def main():
             print(f"  ⚠ Ошибка обработки {obj.get('name', 'unknown')}: {e}")
         
         if (i + 1) % 100 == 0:
-            print(f"  Прогресс: {i+1}/{total_db}")
+            print(f"  Прогресс: {i+1}/{len(debris)}")
     
     print("\n" + "="*80)
     print("✅ ГЕНЕРАЦИЯ ЗАВЕРШЕНА")
     print(f"📊 Обработано объектов: {processed_sc + processed_db}")
     print("📁 Результаты сохранены в папках:")
-    print(f"   - {spacecraft_dir}/ ({processed_sc} файлов)")
-    print(f"   - {debris_dir}/ ({processed_db} файлов)")
+    print(f"   - {spacecraft_dir}/ ({processed_sc} файлов) - ПОСЛЕДНИЕ {total_sc} КА")
+    print(f"   - {debris_dir}/ ({processed_db} файлов) - ПОСЛЕДНИЕ {total_db} объектов мусора")
     print("\n📈 Каждый файл содержит 4 колонки:")
     print("   phi - фазовый угол (градусы)")
     print("   M - приведенная звездная величина")
