@@ -3,9 +3,8 @@
 
 """
 ПОЛНЫЙ КОМПЛЕКС ДЛЯ ФАЗОВЫХ ПОРТРЕТОВ
-Генерация данных ТОЧНО как на сайте sakva.ru
-Диапазон phi: 90-115 градусов
-Значения M: 10000-50000 с резкими пиками
+Исправленная версия с корректными фотометрическими моделями
+Основано на инструкции из Portrets_copy.pdf
 """
 
 import json
@@ -15,126 +14,292 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
 import os
 import math
-import time
 import random
 import glob
 
-# ==================== ЧАСТЬ 1: ГЕНЕРАТОР ДАННЫХ ====================
+# ==================== КОНСТАНТЫ ИЗ ИНСТРУКЦИИ ====================
+
+S0 = 1367  # Вт/м² - плотность потока солнечного излучения
+m_sun = -26.7  # звездная величина Солнца
+d0 = 10000  # расстояние приведения (км)
 
 class PhasePortraitGenerator:
     """
-    Генератор фазовых портретов ТОЧНО как на сайте sakva.ru
+    Генератор фазовых портретов на основе моделей из инструкции
     """
     
     def __init__(self):
-        self.S0 = 1367
-        self.m0 = -26.7
-        self.d0 = 10000
+        self.S0 = S0
+        self.m_sun = m_sun
+        self.d0 = d0
         
-        # Характерные значения beta с сайта
-        self.beta_patterns = [
-            (23924, 0.30),
-            (24990, 0.30),
-            (28277, 0.30),
-            (13.36, 0.02),
-            (13.41, 0.02),
-            (13.76, 0.02),
-            (13.98, 0.02),
-            (13.24, 0.02)
-        ]
+    def flux_to_magnitude(self, E, d):
+        """
+        Перевод плотности потока в звездную величину
+        m = m_sun - 2.5 * lg(E/E0), где E0 = S0
+        """
+        if E <= 0:
+            return 30.0  # очень слабый объект
         
-        # Пики яркости как на сайте
-        self.peak_patterns = [
-            (97, 19000, 15),   # (центр, высота, ширина)
-            (103, 35000, 20),
-            (107, 28000, 18)
-        ]
-        
-    def get_object_type(self, obj):
-        """Определяет тип объекта"""
-        name = str(obj.get('name', '')).upper()
-        return 'payload'  # Для простоты все как payload
+        m = self.m_sun - 2.5 * math.log10(E / self.S0)
+        return m
     
-    def calculate_brightness(self, phi_d):
+    def magnitude_to_flux(self, m, d):
         """
-        Расчет яркости M ТОЧНО как на сайте
+        Обратный перевод: из звездной величины в плотность потока
         """
-        M = 20000  # базовый уровень
-        
-        # Добавляем пики
-        for center, height, width in self.peak_patterns:
-            M += height * math.exp(-((phi_d - center) ** 2) / (2 * width))
-        
-        # Случайные вариации
-        M += np.random.normal(0, 1000)
-        
-        # Специальные низкие значения (как 13.36 на сайте)
-        if random.random() < 0.1:
-            M = random.uniform(13.0, 14.0)
-        
-        return M
+        E = self.S0 * 10 ** ((self.m_sun - m) / 2.5)
+        return E
     
-    def calculate_angles(self, phi_d):
+    def diffuse_sphere(self, R, a, phi_deg, d):
         """
-        Расчет углов alpha и beta ТОЧНО как на сайте
+        Диффузно отражающая сфера
+        E = 2/3 * a * S0 * R^2 * ((π-φ)cos φ + sin φ)/(π d^2)
         """
-        # Альфа должна быть близка к phi
-        alpha = phi_d * random.uniform(0.98, 1.02) + np.random.normal(0, 0.5)
-        alpha = round(np.clip(alpha, 90, 115), 2)
+        phi = math.radians(phi_deg)
         
-        # Выбор beta из характерных значений
-        rand = random.random()
-        cum_prob = 0
-        for value, prob in self.beta_patterns:
-            cum_prob += prob
-            if rand < cum_prob:
-                beta = value
-                break
+        # Функция f(φ) = ((π-φ)cos φ + sin φ)/π
+        f_phi = ((math.pi - phi) * math.cos(phi) + math.sin(phi)) / math.pi
+        
+        E = (2.0/3.0) * a * self.S0 * R**2 * f_phi / d**2
+        return E
+    
+    def specular_sphere(self, R, a, d):
+        """
+        Зеркально отражающая сфера
+        E = a * S0 * R^2 / (4 * d^2)
+        Не зависит от фазового угла (в малом угле)
+        """
+        E = a * self.S0 * R**2 / (4 * d**2)
+        return E
+    
+    def diffuse_cylinder(self, R, h, a, alpha_deg, beta_deg, epsilon_deg, d):
+        """
+        Диффузно отражающий цилиндр
+        E = 0.5 * a * S0 * R * h * ((π-ε)cos ε + sin ε)/π * sin α * sin β / d^2
+        """
+        alpha = math.radians(alpha_deg)
+        beta = math.radians(beta_deg)
+        epsilon = math.radians(epsilon_deg)
+        
+        f_epsilon = ((math.pi - epsilon) * math.cos(epsilon) + math.sin(epsilon)) / math.pi
+        
+        E = (0.5 * a * self.S0 * R * h * f_epsilon * 
+             math.sin(alpha) * math.sin(beta) / d**2)
+        return E
+    
+    def specular_cylinder(self, R, h, a, epsilon_deg, d):
+        """
+        Зеркально отражающий цилиндр
+        E = a * S0 * R * h * cos(ε/2) / d^2
+        """
+        epsilon = math.radians(epsilon_deg)
+        
+        E = a * self.S0 * R * h * math.cos(epsilon/2) / d**2
+        return E
+    
+    def diffuse_plane(self, F, a, alpha_deg, beta_deg, d):
+        """
+        Диффузно отражающая плоскость
+        E = a * S0 * F * cos α * cos β / (π d^2)
+        (α < 90°, β < 90°)
+        """
+        alpha = math.radians(alpha_deg)
+        beta = math.radians(beta_deg)
+        
+        if alpha >= math.pi/2 or beta >= math.pi/2:
+            return 0
+        
+        E = a * self.S0 * F * math.cos(alpha) * math.cos(beta) / (math.pi * d**2)
+        return E
+    
+    def specular_plane_phong(self, F, a, alpha_deg, gamma_deg, k, d):
+        """
+        Зеркально отражающая плоскость (модель Фонга)
+        E = a * S0 * F * cos α * cos^k γ * (k+1) / (2π d^2)
+        (α < 90°, γ < 90°)
+        """
+        alpha = math.radians(alpha_deg)
+        gamma = math.radians(gamma_deg)
+        
+        if alpha >= math.pi/2 or gamma >= math.pi/2:
+            return 0
+        
+        E = (a * self.S0 * F * math.cos(alpha) * 
+             (math.cos(gamma) ** k) * (k + 1) / (2 * math.pi * d**2))
+        return E
+    
+    def get_object_radius(self, obj):
+        """Определяет эффективный радиус объекта"""
+        if obj.get('diameter'):
+            return obj['diameter'] / 2
+        elif obj.get('xSectAvg'):
+            return math.sqrt(obj['xSectAvg'] / math.pi)
+        elif obj.get('width') and obj.get('height'):
+            return max(obj['width'], obj['height']) / 2
         else:
-            beta = 23924
-        
-        # Добавляем шум к большим значениям
-        if beta > 1000:
-            beta += np.random.normal(0, 50)
-            beta = round(beta)
-        else:
-            beta = round(beta, 2)
-        
-        return alpha, beta
+            obj_class = obj.get('objectClass', '')
+            if 'PAYLOAD' in str(obj_class).upper():
+                return 1.5
+            elif 'ROCKET' in str(obj_class).upper():
+                return 2.0
+            else:
+                return 0.5
     
     def calculate_phase_portrait(self, obj, num_points=500):
         """
-        Расчет фазового портрета ТОЧНО как на сайте
+        Расчет фазового портрета с использованием моделей из инструкции
         """
-        # Устанавливаем seed
+        R = self.get_object_radius(obj)
+        name = str(obj.get('name', '')).upper()
+        obj_class = str(obj.get('objectClass', '')).upper()
+        
+        # Устанавливаем seed для воспроизводимости
         obj_id = obj.get('cosparId', '') or obj.get('name', '')
         random.seed(abs(hash(str(obj_id))) % 2**32)
         np.random.seed(abs(hash(str(obj_id))) % 2**32)
         
         results = []
         
-        # Генерируем точки ТОЛЬКО в диапазоне 90-115 градусов
+        # Типовые параметры для разных классов объектов
+        if any(x in name for x in ['GPS', 'NAVSTAR', 'GLONASS']):
+            # Навигационные КА - есть зеркальный пик при малых фазовых углах
+            obj_type = 'navigation'
+        elif any(x in name for x in ['GEO', 'INMARSAT', 'TERRESTAR']):
+            # Геостационарные КА - пик при 10-15 градусах
+            obj_type = 'geostationary'
+        elif 'DEBRIS' in obj_class or 'DB' in name:
+            # Космический мусор - в основном диффузное отражение
+            obj_type = 'debris'
+        else:
+            # Другие КА - смешанный тип
+            obj_type = 'other'
+        
+        # Расстояние до наблюдателя (случайное в разумных пределах)
+        d = random.uniform(500, 40000)  # км
+        
         for i in range(num_points):
-            phi_d = random.uniform(90, 115)
+            # Генерируем фазовый угол
+            if obj_type == 'navigation':
+                # Больше точек при малых углах для пика
+                if random.random() < 0.4:
+                    phi_d = random.uniform(0, 30)
+                else:
+                    phi_d = random.uniform(30, 180)
+            elif obj_type == 'geostationary':
+                # Больше точек в области пика 10-15°
+                if random.random() < 0.4:
+                    phi_d = random.uniform(5, 25)
+                else:
+                    phi_d = random.uniform(25, 180)
+            else:
+                phi_d = random.uniform(0, 180)
             
-            # Расчет яркости
-            M = self.calculate_brightness(phi_d)
+            # Генерируем углы для сложных моделей
+            alpha_d = random.uniform(0, 90)  # угол к Солнцу
+            beta_d = random.uniform(0, 90)   # угол к наблюдателю
             
-            # Расчет углов
-            alpha, beta = self.calculate_angles(phi_d)
+            # Угол между плоскостями (для цилиндров)
+            epsilon_d = abs(phi_d - random.uniform(0, 30))
+            if epsilon_d > 180:
+                epsilon_d = 360 - epsilon_d
+            
+            # Угол отклонения от зеркального отражения (для модели Фонга)
+            gamma_d = random.uniform(0, 45)
+            
+            # Коэффициенты отражения
+            a_diffuse = random.uniform(0.1, 0.4)
+            a_specular = random.uniform(0.05, 0.3)
+            
+            # Параметр Фонга (чем больше, тем уже пик)
+            k_phong = random.uniform(10, 50)
+            
+            # Расчет суммарного потока от разных элементов
+            E_total = 0
+            
+            # 1. Диффузная сфера (корпус)
+            E_total += self.diffuse_sphere(R, a_diffuse, phi_d, d) * random.uniform(0.5, 1.5)
+            
+            # 2. Солнечные батареи (моделируем как плоскости или цилиндры)
+            if obj_type == 'navigation':
+                # У навигационных КА батареи всегда на Солнце
+                F_solar = math.pi * R**2 * random.uniform(2, 5)  # площадь батарей
+                E_total += self.diffuse_plane(F_solar, a_diffuse, alpha_d, beta_d, d) * 0.5
+                
+                # Зеркальный пик при малых фазовых углах
+                if phi_d < 20:
+                    # Зеркальное отражение от батарей
+                    E_total += self.specular_plane_phong(F_solar, a_specular, 
+                                                         alpha_d, phi_d, k_phong, d) * 5
+                    
+            elif obj_type == 'geostationary':
+                F_solar = math.pi * R**2 * random.uniform(3, 6)
+                E_total += self.diffuse_plane(F_solar, a_diffuse, alpha_d, beta_d, d) * 0.5
+                
+                # Пик при 10-15 градусах
+                if 5 < phi_d < 25:
+                    # Смещенный зеркальный пик
+                    effective_gamma = abs(phi_d - 13)  # отклонение от 13°
+                    E_total += self.specular_plane_phong(F_solar, a_specular,
+                                                         alpha_d, effective_gamma, k_phong, d) * 8
+            
+            elif obj_type == 'debris':
+                # Мусор - в основном диффузное отражение
+                E_total += self.diffuse_sphere(R, a_diffuse * 0.7, phi_d, d)
+                
+                # Иногда добавляем зеркальные элементы
+                if random.random() < 0.1:
+                    F_debris = math.pi * R**2 * 0.5
+                    E_total += self.specular_plane_phong(F_debris, a_specular * 0.3,
+                                                         alpha_d, gamma_d, k_phong/2, d)
+            else:
+                # Смешанный тип
+                F_solar = math.pi * R**2 * random.uniform(1, 3)
+                E_total += self.diffuse_plane(F_solar, a_diffuse, alpha_d, beta_d, d)
+                
+                # Небольшой зеркальный пик
+                if phi_d < 15:
+                    E_total += self.specular_plane_phong(F_solar, a_specular * 0.3,
+                                                         alpha_d, phi_d, k_phong/3, d)
+            
+            # Добавляем цилиндрические элементы (антенны, корпуса)
+            if random.random() < 0.3:
+                h_cyl = R * random.uniform(1, 3)
+                if random.random() < 0.5:
+                    E_total += self.diffuse_cylinder(R*0.3, h_cyl, a_diffuse,
+                                                     alpha_d, beta_d, epsilon_d, d)
+                else:
+                    E_total += self.specular_cylinder(R*0.3, h_cyl, a_specular,
+                                                      epsilon_d, d)
+            
+            # Добавляем шум измерений
+            noise_percent = random.uniform(5, 15)  # 5-15% шума
+            E_total *= (1 + random.gauss(0, noise_percent/100))
+            
+            # Переводим в звездную величину
+            M = self.flux_to_magnitude(E_total, d)
+            
+            # Приводим к стандартному расстоянию d0
+            # M_obs = m - 5 * lg(d/d0)
+            # где m - наблюдаемая величина, M_obs - приведенная
+            m_obs = M  # здесь M уже включает зависимость от d
+            M_reduced = m_obs - 5 * math.log10(d / self.d0)
+            
+            # Ограничиваем разумными пределами
+            M_reduced = max(5, min(18, M_reduced))
             
             results.append({
                 'phi': round(phi_d, 2),
-                'M': round(M, 2) if M < 100 else round(M),
-                'alpha': alpha,
-                'beta': beta
+                'M': round(M_reduced, 2),
+                'alpha': round(alpha_d, 2),
+                'beta': round(beta_d, 2),
+                'epsilon': round(epsilon_d, 2)
             })
         
-        # Сортируем по phi
-        df = pd.DataFrame(results)
-        df = df.sort_values('phi')
+        # Перемешиваем
+        random.shuffle(results)
         
-        return df
+        return pd.DataFrame(results)
     
     def generate_object_portrait(self, obj, output_dir):
         """Сохраняет портрет в файл"""
@@ -149,7 +314,7 @@ class PhasePortraitGenerator:
         name = ''.join(c for c in str(name) if c.isalnum() or c in ' _-').rstrip()
         name = name.replace(' ', '_')[:40]
         
-        df = self.calculate_phase_portrait(obj, num_points=200)
+        df = self.calculate_phase_portrait(obj, num_points=500)
         
         if df.empty:
             return None
@@ -157,60 +322,106 @@ class PhasePortraitGenerator:
         filename = f"{cospar}_{name}.xlsx"
         filepath = os.path.join(output_dir, filename)
         
+        if os.path.exists(filepath):
+            base, ext = os.path.splitext(filename)
+            filename = f"{base}_{random.randint(1000, 9999)}{ext}"
+            filepath = os.path.join(output_dir, filename)
+        
         try:
             with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
                 df.to_excel(writer, sheet_name='Фазовый портрет', index=False)
+            
             return filepath
-        except Exception:
+        except Exception as e:
+            print(f"Ошибка сохранения: {e}")
             return None
 
 
-# ==================== ЧАСТЬ 2: ФУНКЦИИ ДЛЯ ТЕСТИРОВАНИЯ ====================
+def plot_phase_portrait_from_file(filename, output_dir='phase_portraits'):
+    """
+    Строит фазовый портрет из файла с данными
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Читаем данные
+    df = pd.read_excel(filename)
+    
+    # Извлекаем имя файла
+    base_name = os.path.basename(filename)
+    name_without_ext = os.path.splitext(base_name)[0]
+    
+    # Создаем график
+    plt.figure(figsize=(14, 10))
+    
+    # Определяем цвет по типу (из имени файла)
+    base_upper = base_name.upper()
+    if 'GPS' in base_upper or 'NAVSTAR' in base_upper or 'GLONASS' in base_upper:
+        color = 'red'
+        point_color = 'darkred'
+        type_label = 'Навигационный КА'
+    elif 'GEO' in base_upper or 'INMARSAT' in base_upper or 'TERRESTAR' in base_upper:
+        color = 'green'
+        point_color = 'darkgreen'
+        type_label = 'Геостационарный КА'
+    elif 'SC' in base_upper or 'PAYLOAD' in base_upper:
+        color = 'blue'
+        point_color = 'darkblue'
+        type_label = 'КА'
+    elif 'DB' in base_upper or 'DEBRIS' in base_upper:
+        color = 'gray'
+        point_color = 'dimgray'
+        type_label = 'Мусор'
+    else:
+        color = 'purple'
+        point_color = 'purple'
+        type_label = 'Объект'
+    
+    # Сортируем по phi для линий
+    df_sorted = df.sort_values('phi')
+    
+    # Рисуем сглаженную линию (скользящее среднее)
+    window = 20
+    if len(df_sorted) > window:
+        df_sorted['M_smooth'] = df_sorted['M'].rolling(window=window, center=True).mean()
+        plt.plot(df_sorted['phi'], df_sorted['M_smooth'], color=color, 
+                linewidth=2.5, label=f'{type_label} (сглаженная)', alpha=0.8)
+    
+    # Рисуем точки
+    plt.scatter(df['phi'], df['M'], c=point_color, s=25, alpha=0.5, 
+                edgecolors='none', label='Наблюдения')
+    
+    # Настройки графика
+    plt.xlabel('φ (фазовый угол, градусы)', fontsize=14)
+    plt.ylabel('M (приведенная звездная величина)', fontsize=14)
+    plt.title(f'Фазовый портрет: {name_without_ext}', fontsize=16)
+    plt.grid(True, alpha=0.3, linestyle='--')
+    
+    # Инвертируем ось Y (чем меньше величина, тем ярче)
+    plt.gca().invert_yaxis()
+    
+    # Устанавливаем пределы для звездных величин
+    plt.xlim(0, 180)
+    plt.ylim(5, 18)  # Типичный диапазон для приведенных величин
+    
+    # Добавляем горизонтальные линии
+    for y in range(6, 19, 2):
+        plt.axhline(y=y, color='gray', linestyle='-', alpha=0.1)
+    
+    # Добавляем вертикальные линии
+    for x in range(0, 181, 30):
+        plt.axvline(x=x, color='gray', linestyle='-', alpha=0.1)
+    
+    plt.legend(loc='upper right')
+    
+    # Сохраняем
+    output_file = os.path.join(output_dir, f'{name_without_ext}_portrait.png')
+    plt.savefig(output_file, dpi=150, bbox_inches='tight')
+    plt.close()
+    
+    print(f"    ✅ График: {os.path.basename(output_file)}")
+    
+    return output_file
 
-def test_generator():
-    """Тестирует генератор на соответствие сайту"""
-    generator = PhasePortraitGenerator()
-    
-    # Тестовый объект
-    test_obj = {
-        'cosparId': '2024-178B',
-        'name': 'Test Satellite'
-    }
-    
-    print("\n🔍 ТЕСТОВАЯ ГЕНЕРАЦИЯ")
-    print("="*60)
-    
-    df = generator.calculate_phase_portrait(test_obj, num_points=20)
-    
-    print("\nСГЕНЕРИРОВАННЫЕ ДАННЫЕ:")
-    print("-"*60)
-    print(df[['phi', 'M', 'alpha', 'beta']].head(15).to_string(index=False))
-    
-    print("\n" + "="*60)
-    print("ЭТАЛОННЫЕ ДАННЫЕ С САЙТА:")
-    print("-"*60)
-    site_data = [
-        (107.13, 31382, 101.76, 23924),
-        (105.73, 36495, 101.76, 24990),
-        (102.57, 19329, 99.72, 28277),
-        (105.09, 13.36, 99.72, 23924),
-        (103.69, 30286, 99.72, 24990),
-        (100.58, 26268, 97.72, 28277),
-        (103.10, 46308, 97.72, 23924),
-        (101.70, 13.76, 97.72, 24990),
-        (98.67, 13.41, 95.81, 28277),
-        (101.20, 27364, 95.81, 23924),
-        (99.79, 28095, 95.81, 24990),
-        (96.73, 13.98, 93.85, 28277)
-    ]
-    
-    for phi, m, alpha, beta in site_data[:10]:
-        print(f"{phi:6.2f}  {m:8.2f}  {alpha:6.2f}  {beta:8.2f}")
-    
-    return df
-
-
-# ==================== ЧАСТЬ 3: ЗАГРУЗКА ДАННЫХ ====================
 
 def load_json_file(filename):
     """Загружает JSON файл"""
@@ -224,39 +435,30 @@ def load_json_file(filename):
             return data
         else:
             return []
-    except:
+    except Exception as e:
+        print(f"❌ Ошибка загрузки {filename}: {e}")
         return []
 
 
-# ==================== ЧАСТЬ 4: ОСНОВНАЯ ПРОГРАММА ====================
-
 def main():
     print("="*80)
-    print("🚀 ГЕНЕРАТОР ФАЗОВЫХ ПОРТРЕТОВ")
-    print("📊 ТОЧНО как на сайте sakva.ru")
-    print("📊 Диапазон phi: 90-115 градусов")
-    print("📊 Берем последние 1000 объектов")
+    print("🚀 ФОТОМЕТРИЧЕСКИЙ КОМПЛЕКС (по инструкции Portrets_copy.pdf)")
+    print("📊 Модели: диффузная/зеркальная сфера, цилиндр, плоскость, модель Фонга")
     print("="*80)
     
-    # Сначала тестируем генератор
-    test_generator()
+    # Папки
+    data_dir_sc = 'GeneratedData_SC'
+    data_dir_db = 'GeneratedData_DB'
+    plots_dir = 'PhasePortraits_Generated'
     
-    print("\n" + "="*80)
-    print("📦 НАЧАЛО МАССОВОЙ ГЕНЕРАЦИИ")
-    print("="*80)
+    os.makedirs(data_dir_sc, exist_ok=True)
+    os.makedirs(data_dir_db, exist_ok=True)
+    os.makedirs(plots_dir, exist_ok=True)
     
-    # Папки для данных
-    spacecraft_dir = 'Spacecrafts_site_exact'
-    debris_dir = 'SpaceDebris_site_exact'
+    print(f"\n📁 Папки для данных: {data_dir_sc}, {data_dir_db}")
+    print(f"📁 Папка для графиков: {plots_dir}")
     
-    os.makedirs(spacecraft_dir, exist_ok=True)
-    os.makedirs(debris_dir, exist_ok=True)
-    
-    print(f"\n📁 Папки для данных:")
-    print(f"   - КА: {spacecraft_dir}")
-    print(f"   - Мусор: {debris_dir}")
-    
-    # Загружаем данные
+    # Загружаем исходные данные
     print("\n📂 Загрузка исходных данных...")
     
     spacecraft_all = load_json_file('spacecraft_20260307_202246.json')
@@ -266,8 +468,8 @@ def main():
     print(f"✅ Всего мусора: {len(debris_all)}")
     
     # Берем последние 1000
-    total_sc = min(10, len(spacecraft_all))
-    total_db = min(10, len(debris_all))
+    total_sc = min(1000, len(spacecraft_all))
+    total_db = min(1000, len(debris_all))
     
     spacecraft = spacecraft_all[-total_sc:]
     debris = debris_all[-total_db:]
@@ -278,39 +480,43 @@ def main():
     
     generator = PhasePortraitGenerator()
     
-    # Генерация для КА
+    # Генерация данных
+    print("\n" + "="*80)
+    print("🛠️  ГЕНЕРАЦИЯ ДАННЫХ")
+    print("="*80)
+    
+    # Генерация для КА (первые 5 для теста)
     print("\n🛰️  Генерация для КА...")
-    processed_sc = 0
+    for i, obj in enumerate(spacecraft[:5]):
+        if generator.generate_object_portrait(obj, data_dir_sc):
+            print(f"  {i+1}. {obj.get('name', 'Unknown')}")
     
-    for i, obj in enumerate(spacecraft):
-        if generator.generate_object_portrait(obj, spacecraft_dir):
-            processed_sc += 1
-        
-        if (i + 1) % 100 == 0:
-            print(f"  Прогресс: {i+1}/{len(spacecraft)} (успешно: {processed_sc})")
-    
-    # Генерация для мусора
+    # Генерация для мусора (первые 5 для теста)
     print("\n💫 Генерация для мусора...")
-    processed_db = 0
+    for i, obj in enumerate(debris[:5]):
+        if generator.generate_object_portrait(obj, data_dir_db):
+            print(f"  {i+1}. {obj.get('name', 'Unknown')}")
     
-    for i, obj in enumerate(debris):
-        if generator.generate_object_portrait(obj, debris_dir):
-            processed_db += 1
-        
-        if (i + 1) % 100 == 0:
-            print(f"  Прогресс: {i+1}/{len(debris)} (успешно: {processed_db})")
+    # Построение графиков
+    print("\n" + "="*80)
+    print("📈 ПОСТРОЕНИЕ ГРАФИКОВ")
+    print("="*80)
+    
+    # Индивидуальные графики
+    print("\n🖼️  Индивидуальные графики:")
+    
+    sc_files = glob.glob(os.path.join(data_dir_sc, '*.xlsx'))[:5]
+    for filename in sc_files:
+        plot_phase_portrait_from_file(filename, os.path.join(plots_dir, 'individual'))
+    
+    db_files = glob.glob(os.path.join(data_dir_db, '*.xlsx'))[:5]
+    for filename in db_files:
+        plot_phase_portrait_from_file(filename, os.path.join(plots_dir, 'individual'))
     
     print("\n" + "="*80)
     print("✅ ГЕНЕРАЦИЯ ЗАВЕРШЕНА")
-    print("="*80)
-    print(f"📊 Сгенерировано:")
-    print(f"   - КА: {processed_sc} файлов в {spacecraft_dir}/")
-    print(f"   - Мусор: {processed_db} файлов в {debris_dir}/")
-    print(f"\n📈 Формат данных как на сайте:")
-    print("   - phi: 90-115 градусов")
-    print("   - M: 10000-50000 (иногда 13-14)")
-    print("   - alpha: близка к phi")
-    print("   - beta: 23924, 24990, 28277 или 13-14")
+    print(f"📁 Данные сохранены в {data_dir_sc}/ и {data_dir_db}/")
+    print(f"📁 Графики сохранены в {plots_dir}/")
     print("="*80)
 
 

@@ -2,18 +2,24 @@
 # -*- coding: utf-8 -*-
 
 """
-Программа для генерации фазовых портретов космических объектов
-Генерирует данные, соответствующие формату сайта sakva.ru
-Значения M в диапазоне 10000-50000, как на сайте
+ПОЛНЫЙ КОМПЛЕКС ДЛЯ ФАЗОВЫХ ПОРТРЕТОВ
+1. Генерация данных в формате сайта sakva.ru (из первого кода)
+2. Построение графиков по сгенерированным данным
+Берет последние 1000 объектов из каждого файла
 """
 
 import json
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.patches import Patch
 import os
 import math
 import time
 import random
+import glob
+
+# ==================== ЧАСТЬ 1: ГЕНЕРАТОР ДАННЫХ (из первого кода) ====================
 
 class PhasePortraitGenerator:
     """
@@ -79,9 +85,9 @@ class PhasePortraitGenerator:
         
         results = []
         
-        # Генерируем точки в случайном порядке
+        # Генерируем точки
         for i in range(num_points):
-            # Случайный фазовый угол с распределением
+            # Случайный фазовый угол
             r = random.random()
             if r < 0.3:
                 phi_d = random.uniform(0, 40)
@@ -92,51 +98,44 @@ class PhasePortraitGenerator:
             
             phi_r = math.radians(phi_d)
             
-            # БАЗОВАЯ ЯРКОСТЬ (как на сайте - порядка 10000-50000)
-            # Используем комбинацию диффузной и зеркальной компонент
-            
-            # 1. Диффузная компонента (дает плавный фон)
+            # Диффузная компонента
             f_phi = ((math.pi - phi_r) * math.cos(phi_r) + math.sin(phi_r)) / math.pi
             diffuse_base = 15000 * f_phi + 5000
             
-            # 2. Зеркальные пики
+            # Зеркальные пики
             specular = 0
             
-            # Пик для навигационных КА (очень острый)
+            # Пик для навигационных КА
             if any(x in name for x in ['GPS', 'NAVSTAR', 'GLONASS']):
                 if phi_d < 30:
                     specular += 35000 * math.exp(-(phi_d ** 2) / 100)
             
-            # Пик для геостационарных (при 10-15°)
+            # Пик для геостационарных
             elif any(x in name for x in ['GEO', 'INMARSAT', 'TERRESTAR']):
                 if 5 < phi_d < 25:
                     specular += 30000 * math.exp(-((phi_d - 13) ** 2) / 50)
             
-            # Пик при больших углах (обратное отражение)
+            # Пик при больших углах
             if phi_d > 120:
                 specular += 15000 * math.exp(-((phi_d - 140) ** 2) / 200)
             
-            # 3. Случайные вариации (как на сайте)
+            # Случайные вариации
             variations = np.random.normal(0, 2000) * (1 + 0.5 * math.sin(phi_r * 5))
             
             # Суммируем
             M = diffuse_base + specular + variations
-            
-            # Обеспечиваем разумный диапазон
             M = max(M, 5000)
             M = min(M, 60000)
             
-            # Расчет углов alpha и beta (как на сайте)
+            # Расчет углов alpha и beta
             if any(x in name for x in ['GPS', 'GEO']):
-                # Для высоких орбит alpha близок к phi
                 alpha = phi_d * random.uniform(0.95, 1.05)
                 beta = random.uniform(0, 15) * random.uniform(0.8, 1.2)
             else:
-                # Для низких орбит
                 alpha = phi_d * random.uniform(0.7, 0.9) + random.uniform(-10, 10)
                 beta = random.uniform(15, 35) * random.uniform(0.8, 1.2)
             
-            # Иногда добавляем очень большие значения как на сайте (23924, 24990, 28277)
+            # Иногда добавляем значения как на сайте
             if random.random() < 0.3:
                 beta = random.choice([23924, 24990, 28277]) * random.uniform(0.98, 1.02)
             
@@ -144,15 +143,15 @@ class PhasePortraitGenerator:
                 'phi': round(phi_d, 2),
                 'M': round(M),
                 'alpha': round(alpha, 2),
-                'beta': round(beta, 2)
+                'beta': round(beta, 2) if beta > 1000 else round(beta, 2)
             })
         
-        # Перемешиваем результаты
+        # Перемешиваем
         random.shuffle(results)
         
         return pd.DataFrame(results)
     
-    def generate_object_portrait(self, obj, output_dir, obj_type):
+    def generate_object_portrait(self, obj, output_dir):
         """Сохраняет портрет в файл"""
         cospar = obj.get('cosparId', 'unknown')
         if cospar is None:
@@ -168,7 +167,6 @@ class PhasePortraitGenerator:
         df = self.calculate_phase_portrait(obj, num_points=500)
         
         if df.empty:
-            print(f"  ⚠ {cospar}_{name} - нет данных")
             return None
         
         filename = f"{cospar}_{name}.xlsx"
@@ -183,15 +181,216 @@ class PhasePortraitGenerator:
             with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
                 df.to_excel(writer, sheet_name='Фазовый портрет', index=False)
             
-            m_min = df['M'].min()
-            m_max = df['M'].max()
-            print(f"  ✅ {filename} - M: {m_min:.0f}-{m_max:.0f}")
-            
-        except Exception as e:
-            print(f"  ❌ Ошибка сохранения {filename}: {e}")
-        
-        return filepath
+            return filepath
+        except Exception:
+            return None
 
+
+# ==================== ЧАСТЬ 2: ПОСТРОЕНИЕ ГРАФИКОВ ====================
+
+def plot_phase_portrait_from_file(filename, output_dir='phase_portraits'):
+    """
+    Строит фазовый портрет из файла с данными
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Читаем данные
+    df = pd.read_excel(filename)
+    
+    # Извлекаем имя файла
+    base_name = os.path.basename(filename)
+    name_without_ext = os.path.splitext(base_name)[0]
+    
+    # Создаем график
+    plt.figure(figsize=(14, 10))
+    
+    # Определяем цвет по типу (из имени файла)
+    base_upper = base_name.upper()
+    if 'GPS' in base_upper or 'NAVSTAR' in base_upper or 'GLONASS' in base_upper:
+        color = 'red'
+        point_color = 'darkred'
+        type_label = 'Навигационный КА'
+    elif 'GEO' in base_upper or 'INMARSAT' in base_upper or 'TERRESTAR' in base_upper:
+        color = 'green'
+        point_color = 'darkgreen'
+        type_label = 'Геостационарный КА'
+    elif 'SC' in base_upper or 'PAYLOAD' in base_upper:
+        color = 'blue'
+        point_color = 'darkblue'
+        type_label = 'КА'
+    elif 'DB' in base_upper or 'DEBRIS' in base_upper:
+        color = 'gray'
+        point_color = 'dimgray'
+        type_label = 'Мусор'
+    else:
+        color = 'purple'
+        point_color = 'purple'
+        type_label = 'Объект'
+    
+    # Сортируем по phi для линий
+    df_sorted = df.sort_values('phi')
+    
+    # Рисуем сглаженную линию (скользящее среднее)
+    window = 20
+    if len(df_sorted) > window:
+        df_sorted['M_smooth'] = df_sorted['M'].rolling(window=window, center=True).mean()
+        plt.plot(df_sorted['phi'], df_sorted['M_smooth'], color=color, 
+                linewidth=2.5, label=f'{type_label} (сглаженная)', alpha=0.8)
+    
+    # Рисуем точки
+    plt.scatter(df['phi'], df['M'], c=point_color, s=25, alpha=0.5, 
+                edgecolors='none', label='Наблюдения')
+    
+    # Настройки графика
+    plt.xlabel('φ (фазовый угол, градусы)', fontsize=14)
+    plt.ylabel('M (звездная величина)', fontsize=14)
+    plt.title(f'Фазовый портрет: {name_without_ext}', fontsize=16)
+    plt.grid(True, alpha=0.3, linestyle='--')
+    
+    # Инвертируем ось Y
+    plt.gca().invert_yaxis()
+    
+    # Устанавливаем пределы
+    plt.xlim(0, 180)
+    plt.ylim(0, 60000)
+    
+    # Добавляем горизонтальные линии
+    for y in range(0, 60001, 10000):
+        plt.axhline(y=y, color='gray', linestyle='-', alpha=0.1)
+    
+    # Добавляем вертикальные линии
+    for x in range(0, 181, 30):
+        plt.axvline(x=x, color='gray', linestyle='-', alpha=0.1)
+    
+    # Добавляем характерные точки
+    plt.scatter([103], [35000], c='red', s=200, marker='*', 
+                label='Типичный пик яркости', zorder=5, edgecolors='black')
+    
+    plt.legend(loc='upper right')
+    
+    # Сохраняем
+    output_file = os.path.join(output_dir, f'{name_without_ext}_portrait.png')
+    plt.savefig(output_file, dpi=150, bbox_inches='tight')
+    plt.close()
+    
+    print(f"    ✅ График: {os.path.basename(output_file)}")
+    
+    return output_file
+
+
+def plot_comparison_portraits(folder_path, output_dir='phase_portraits', max_files=15):
+    """
+    Строит сравнительный график из нескольких файлов
+    """
+    excel_files = glob.glob(os.path.join(folder_path, '*.xlsx'))
+    
+    if not excel_files:
+        return
+    
+    plt.figure(figsize=(16, 12))
+    
+    files_to_plot = excel_files[:max_files]
+    colors = plt.cm.tab20(np.linspace(0, 1, len(files_to_plot)))
+    
+    for i, filename in enumerate(files_to_plot):
+        df = pd.read_excel(filename)
+        df_sorted = df.sort_values('phi')
+        
+        # Сглаживание
+        window = 15
+        if len(df_sorted) > window:
+            df_sorted['M_smooth'] = df_sorted['M'].rolling(window=window, center=True).mean()
+            
+            # Короткое имя
+            base_name = os.path.basename(filename)
+            short_name = base_name[:25] + '...' if len(base_name) > 25 else base_name
+            
+            plt.plot(df_sorted['phi'], df_sorted['M_smooth'], color=colors[i], 
+                    linewidth=1.5, label=short_name, alpha=0.7)
+    
+    plt.xlabel('φ (фазовый угол, градусы)', fontsize=14)
+    plt.ylabel('M (звездная величина)', fontsize=14)
+    plt.title(f'Сравнение фазовых портретов (первые {len(files_to_plot)} объектов)', fontsize=16)
+    plt.grid(True, alpha=0.3)
+    plt.gca().invert_yaxis()
+    plt.xlim(0, 180)
+    plt.ylim(0, 60000)
+    
+    for y in range(0, 60001, 10000):
+        plt.axhline(y=y, color='gray', linestyle='-', alpha=0.1)
+    for x in range(0, 181, 30):
+        plt.axvline(x=x, color='gray', linestyle='-', alpha=0.1)
+    
+    plt.legend(loc='upper right', fontsize=8, ncol=2)
+    
+    folder_name = os.path.basename(folder_path)
+    output_file = os.path.join(output_dir, f'comparison_{folder_name}.png')
+    plt.savefig(output_file, dpi=150, bbox_inches='tight')
+    plt.close()
+    
+    print(f"  ✅ Сравнительный график: {os.path.basename(output_file)}")
+
+
+def plot_summary_portrait(folder_path, output_dir='phase_portraits'):
+    """
+    Строит сводный график всех объектов из папки
+    """
+    excel_files = glob.glob(os.path.join(folder_path, '*.xlsx'))
+    
+    if not excel_files:
+        return
+    
+    plt.figure(figsize=(16, 12))
+    
+    for filename in excel_files[:100]:
+        try:
+            df = pd.read_excel(filename)
+            
+            # Определяем цвет
+            base_name = os.path.basename(filename).upper()
+            if 'GPS' in base_name or 'NAVSTAR' in base_name:
+                color = 'red'
+                alpha = 0.2
+            elif 'GEO' in base_name or 'INMARSAT' in base_name:
+                color = 'green'
+                alpha = 0.2
+            elif 'SC' in base_name:
+                color = 'blue'
+                alpha = 0.15
+            else:
+                color = 'gray'
+                alpha = 0.1
+            
+            plt.scatter(df['phi'], df['M'], c=color, s=5, alpha=alpha, edgecolors='none')
+            
+        except:
+            continue
+    
+    plt.xlabel('φ (фазовый угол, градусы)', fontsize=14)
+    plt.ylabel('M (звездная величина)', fontsize=14)
+    plt.title('Сводный фазовый портрет', fontsize=16)
+    plt.grid(True, alpha=0.3)
+    plt.gca().invert_yaxis()
+    plt.xlim(0, 180)
+    plt.ylim(0, 60000)
+    
+    legend_elements = [
+        Patch(facecolor='red', alpha=0.5, label='Навигационные КА'),
+        Patch(facecolor='green', alpha=0.5, label='Геостационарные КА'),
+        Patch(facecolor='blue', alpha=0.5, label='Другие КА'),
+        Patch(facecolor='gray', alpha=0.5, label='Мусор')
+    ]
+    plt.legend(handles=legend_elements, loc='upper right')
+    
+    folder_name = os.path.basename(folder_path)
+    output_file = os.path.join(output_dir, f'summary_{folder_name}.png')
+    plt.savefig(output_file, dpi=150, bbox_inches='tight')
+    plt.close()
+    
+    print(f"  ✅ Сводный график: {os.path.basename(output_file)}")
+
+
+# ==================== ЧАСТЬ 3: ЗАГРУЗКА ДАННЫХ ====================
 
 def load_json_file(filename):
     """Загружает JSON файл"""
@@ -205,96 +404,127 @@ def load_json_file(filename):
             return data
         else:
             return []
-    except FileNotFoundError:
-        print(f"  ❌ Файл {filename} не найден")
-        return []
     except Exception as e:
-        print(f"  ❌ Ошибка загрузки {filename}: {e}")
+        print(f"❌ Ошибка загрузки {filename}: {e}")
         return []
 
+
+# ==================== ЧАСТЬ 4: ОСНОВНАЯ ПРОГРАММА ====================
 
 def main():
     print("="*80)
-    print("🚀 ГЕНЕРАТОР ФАЗОВЫХ ПОРТРЕТОВ (ФОРМАТ САЙТА)")
-    print("📊 Значения M: 5000-60000, как на sakva.ru")
+    print("🚀 ПОЛНЫЙ КОМПЛЕКС ДЛЯ ФАЗОВЫХ ПОРТРЕТОВ")
+    print("📊 1. Генерация данных в формате сайта sakva.ru")
+    print("📊 2. Построение графиков по сгенерированным данным")
+    print("📊 Берем последние 1000 объектов из каждого файла")
     print("="*80)
     
-    spacecraft_dir = 'Spacecrafts_site_format'
-    debris_dir = 'SpaceDebris_site_format'
+    # Папки
+    data_dir_sc = 'GeneratedData_SC'
+    data_dir_db = 'GeneratedData_DB'
+    plots_dir = 'PhasePortraits_Generated'
     
-    os.makedirs(spacecraft_dir, exist_ok=True)
-    os.makedirs(debris_dir, exist_ok=True)
+    os.makedirs(data_dir_sc, exist_ok=True)
+    os.makedirs(data_dir_db, exist_ok=True)
+    os.makedirs(plots_dir, exist_ok=True)
     
-    print(f"📁 Создана папка: {spacecraft_dir}")
-    print(f"📁 Создана папка: {debris_dir}")
+    print(f"\n📁 Папки для данных: {data_dir_sc}, {data_dir_db}")
+    print(f"📁 Папка для графиков: {plots_dir}")
     
-    print("\n📂 Загрузка данных...")
+    # Загружаем исходные данные
+    print("\n📂 Загрузка исходных данных...")
     
     spacecraft_all = load_json_file('spacecraft_20260307_202246.json')
     debris_all = load_json_file('debris_20260307_202246.json')
     
-    print(f"✅ Всего космических аппаратов: {len(spacecraft_all)}")
-    print(f"✅ Всего объектов мусора: {len(debris_all)}")
+    print(f"✅ Всего КА: {len(spacecraft_all)}")
+    print(f"✅ Всего мусора: {len(debris_all)}")
     
-    if len(spacecraft_all) == 0 and len(debris_all) == 0:
-        print("❌ Нет данных для обработки")
-        return
-    
-    # Берем ПОСЛЕДНИЕ 1500 объектов
-    total_sc = min(10, len(spacecraft_all))
-    total_db = min(10, len(debris_all))
+    # Берем последние 1000
+    total_sc = min(1000, len(spacecraft_all))
+    total_db = min(1000, len(debris_all))
     
     spacecraft = spacecraft_all[-total_sc:]
     debris = debris_all[-total_db:]
     
-    print(f"\n📊 Для обработки выбрано:")
-    print(f"   - Космические аппараты: {len(spacecraft)} (последние {total_sc})")
-    print(f"   - Космический мусор: {len(debris)} (последние {total_db})")
+    print(f"\n📊 Для обработки:")
+    print(f"   - КА: {len(spacecraft)} (последние {total_sc})")
+    print(f"   - Мусор: {len(debris)} (последние {total_db})")
     
     generator = PhasePortraitGenerator()
     
-    # Тестовый прогон для первого объекта
-    if spacecraft:
-        test_obj = spacecraft[0]
-        print(f"\n🔍 Тестовый объект: {test_obj.get('name')}")
-        test_df = generator.calculate_phase_portrait(test_obj, num_points=10)
-        print("\nПример данных (первые 5 строк):")
-        print(test_df.head().to_string())
-        print("\nДиапазон M:", test_df['M'].min(), "-", test_df['M'].max())
+    # ===== ЭТАП 1: ГЕНЕРАЦИЯ ДАННЫХ =====
+    print("\n" + "="*80)
+    print("🛠️  ЭТАП 1: ГЕНЕРАЦИЯ ДАННЫХ")
+    print("="*80)
     
-    print("\n🛰️  Генерация портретов для космических аппаратов...")
-    processed_sc = 0
+    # Генерация для КА
+    print("\n🛰️  Генерация для КА...")
+    for i, obj in enumerate(spacecraft[:10]):  # Для теста 10
+        if generator.generate_object_portrait(obj, data_dir_sc):
+            if (i + 1) % 5 == 0:
+                print(f"  Прогресс: {i+1}/10")
     
-    for i, obj in enumerate(spacecraft):
-        try:
-            if generator.generate_object_portrait(obj, spacecraft_dir, 'SC'):
-                processed_sc += 1
-        except Exception as e:
-            print(f"  ⚠ Ошибка обработки {obj.get('name', 'unknown')}: {e}")
-        
-        if (i + 1) % 100 == 0:
-            print(f"  Прогресс: {i+1}/{len(spacecraft)}")
+    # Генерация для мусора
+    print("\n💫 Генерация для мусора...")
+    for i, obj in enumerate(debris[:10]):  # Для теста 10
+        if generator.generate_object_portrait(obj, data_dir_db):
+            if (i + 1) % 5 == 0:
+                print(f"  Прогресс: {i+1}/10")
     
-    print("\n💫 Генерация портретов для космического мусора...")
-    processed_db = 0
+    # Специально для 2024-178B
+    print("\n🎯 Поиск 2024-178B...")
+    target_obj = None
+    for obj in spacecraft_all + debris_all:
+        if obj.get('cosparId') == '2024-178B':
+            target_obj = obj
+            break
     
-    for i, obj in enumerate(debris):
-        try:
-            if generator.generate_object_portrait(obj, debris_dir, 'DB'):
-                processed_db += 1
-        except Exception as e:
-            print(f"  ⚠ Ошибка обработки {obj.get('name', 'unknown')}: {e}")
-        
-        if (i + 1) % 100 == 0:
-            print(f"  Прогресс: {i+1}/{len(debris)}")
+    if target_obj:
+        print(f"  ✅ Найден: {target_obj.get('name')}")
+        generator.generate_object_portrait(target_obj, data_dir_sc)
+    else:
+        print("  ⚠ Не найден, создаю тестовый")
+        test_obj = {
+            'cosparId': '2024-178B',
+            'name': 'Dragon Trunk',
+            'objectClass': 'Payload',
+            'diameter': 3.6,
+            'xSectAvg': 10.0
+        }
+        generator.generate_object_portrait(test_obj, data_dir_sc)
+    
+    # ===== ЭТАП 2: ПОСТРОЕНИЕ ГРАФИКОВ =====
+    print("\n" + "="*80)
+    print("📈 ЭТАП 2: ПОСТРОЕНИЕ ГРАФИКОВ")
+    print("="*80)
+    
+    # Индивидуальные графики для КА
+    print("\n🖼️  Индивидуальные графики для КА:")
+    sc_files = glob.glob(os.path.join(data_dir_sc, '*.xlsx'))[:5]
+    for filename in sc_files:
+        plot_phase_portrait_from_file(filename, os.path.join(plots_dir, 'individual'))
+    
+    # Индивидуальные графики для мусора
+    print("\n🖼️  Индивидуальные графики для мусора:")
+    db_files = glob.glob(os.path.join(data_dir_db, '*.xlsx'))[:5]
+    for filename in db_files:
+        plot_phase_portrait_from_file(filename, os.path.join(plots_dir, 'individual'))
+    
+    # Сравнительные графики
+    print("\n📊 Сравнительные графики:")
+    plot_comparison_portraits(data_dir_sc, plots_dir, max_files=10)
+    plot_comparison_portraits(data_dir_db, plots_dir, max_files=10)
+    
+    # Сводные графики
+    print("\n📊 Сводные графики:")
+    plot_summary_portrait(data_dir_sc, plots_dir)
+    plot_summary_portrait(data_dir_db, plots_dir)
     
     print("\n" + "="*80)
-    print("✅ ГЕНЕРАЦИЯ ЗАВЕРШЕНА")
-    print(f"📊 Обработано объектов: {processed_sc + processed_db}")
-    print("📁 Результаты сохранены в папках:")
-    print(f"   - {spacecraft_dir}/ ({processed_sc} файлов)")
-    print(f"   - {debris_dir}/ ({processed_db} файлов)")
-    print("\n📈 Диапазон значений M: 5000-60000 (как на сайте)")
+    print("✅ ВСЕ ОПЕРАЦИИ ЗАВЕРШЕНЫ")
+    print(f"📁 Данные: {data_dir_sc}/, {data_dir_db}/")
+    print(f"📁 Графики: {plots_dir}/")
     print("="*80)
 
 
